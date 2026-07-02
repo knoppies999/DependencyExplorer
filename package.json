@@ -1,0 +1,155 @@
+{
+  "name": "dependency-explorer",
+  "displayName": "Dependency Explorer",
+  "description": "Full dependency tree (including transitive dependencies) for npm and NuGet projects, with vulnerability flags and one-click update or transitive override.",
+  "version": "0.0.1",
+  "publisher": "RuanduPlessis",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/knoppies999/DependencyExplorer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/knoppies999/DependencyExplorer/issues"
+  },
+  "homepage": "https://github.com/knoppies999/DependencyExplorer#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "dependencies",
+    "transitive dependencies",
+    "vulnerabilities",
+    "npm",
+    "nuget"
+  ],
+  "main": "./out/extension.js",
+  "icon": "media/icon.png",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dependencyExplorer",
+          "title": "Dependencies",
+          "icon": "media/dependencies.svg"
+        }
+      ]
+    },
+    "views": {
+      "dependencyExplorer": [
+        {
+          "id": "dependencyExplorer.tree",
+          "name": "Dependencies",
+          "icon": "media/dependencies.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "dependencyExplorer.tree",
+        "contents": "No npm or NuGet projects found in this workspace.\nnpm projects need a package-lock.json (run npm install).\nNuGet projects need obj/project.assets.json (run dotnet restore).\n[Refresh](command:dependencyExplorer.refresh)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "dependencyExplorer.refresh",
+        "title": "Refresh",
+        "category": "Dependency Explorer",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "dependencyExplorer.fixAcrossProjects",
+        "title": "Update Package Across All Projects…",
+        "category": "Dependency Explorer",
+        "icon": "$(replace-all)"
+      },
+      {
+        "command": "dependencyExplorer.updateDependency",
+        "title": "Update Version…",
+        "category": "Dependency Explorer",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "dependencyExplorer.overrideDependency",
+        "title": "Override / Pin Version…",
+        "category": "Dependency Explorer",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "dependencyExplorer.openManifest",
+        "title": "Open Manifest",
+        "category": "Dependency Explorer",
+        "icon": "$(go-to-file)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "dependencyExplorer.updateDependency",
+          "when": "false"
+        },
+        {
+          "command": "dependencyExplorer.overrideDependency",
+          "when": "false"
+        },
+        {
+          "command": "dependencyExplorer.openManifest",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "dependencyExplorer.fixAcrossProjects",
+          "when": "view == dependencyExplorer.tree",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dependencyExplorer.refresh",
+          "when": "view == dependencyExplorer.tree",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "dependencyExplorer.updateDependency",
+          "when": "view == dependencyExplorer.tree && viewItem == dep:direct",
+          "group": "inline@1"
+        },
+        {
+          "command": "dependencyExplorer.overrideDependency",
+          "when": "view == dependencyExplorer.tree && viewItem == dep:transitive",
+          "group": "inline@1"
+        },
+        {
+          "command": "dependencyExplorer.updateDependency",
+          "when": "view == dependencyExplorer.tree && viewItem == dep:direct"
+        },
+        {
+          "command": "dependencyExplorer.overrideDependency",
+          "when": "view == dependencyExplorer.tree && viewItem == dep:transitive"
+        },
+        {
+          "command": "dependencyExplorer.openManifest",
+          "when": "view == dependencyExplorer.tree && viewItem == project"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.5.0"
+  }
+}
