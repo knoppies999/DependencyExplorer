@@ -1,4 +1,10 @@
 import { Ecosystem } from '../types';
+import {
+  getNugetFlatContainer,
+  joinUrl,
+  resolveNpmFeed,
+  resolveNugetSources,
+} from './feedConfig';
 
 export interface DepRequirement {
   name: string;
@@ -34,12 +40,13 @@ export async function computeBumpPreview(
   name: string,
   currentVersion: string,
   targetVersion: string,
+  projectDir: string,
   targetFramework?: string
 ): Promise<BumpPreview> {
   if (ecosystem === 'npm') {
     const [current, target] = await Promise.all([
-      safe(() => fetchNpmDeps(name, currentVersion)),
-      fetchNpmDeps(name, targetVersion),
+      safe(() => fetchNpmDeps(name, currentVersion, projectDir)),
+      fetchNpmDeps(name, targetVersion, projectDir),
     ]);
     return {
       changes: diffDependencies(current ?? [], target),
@@ -48,8 +55,8 @@ export async function computeBumpPreview(
   }
 
   const [current, target] = await Promise.all([
-    safe(() => fetchNugetDeps(name, currentVersion, targetFramework)),
-    fetchNugetDeps(name, targetVersion, targetFramework),
+    safe(() => fetchNugetDeps(name, currentVersion, projectDir, targetFramework)),
+    fetchNugetDeps(name, targetVersion, projectDir, targetFramework),
   ]);
   return {
     changes: diffDependencies(current?.deps ?? [], target.deps),
@@ -90,8 +97,13 @@ export function diffDependencies(current: DepRequirement[], target: DepRequireme
 
 /* ---------------------------------- npm ---------------------------------- */
 
-async function fetchNpmDeps(name: string, version: string): Promise<DepRequirement[]> {
-  const res = await fetch(`https://registry.npmjs.org/${name}/${version}`);
+async function fetchNpmDeps(
+  name: string,
+  version: string,
+  projectDir: string
+): Promise<DepRequirement[]> {
+  const feed = resolveNpmFeed(name, projectDir);
+  const res = await fetch(joinUrl(feed.baseUrl, `${name}/${version}`), { headers: feed.headers });
   if (!res.ok) {
     throw new Error(`npm registry returned ${res.status} for ${name}@${version}`);
   }
@@ -118,15 +130,37 @@ async function fetchNpmDeps(name: string, version: string): Promise<DepRequireme
 async function fetchNugetDeps(
   name: string,
   version: string,
+  projectDir: string,
   targetFramework?: string
 ): Promise<{ deps: DepRequirement[]; framework?: string }> {
   const id = name.toLowerCase();
   const ver = version.toLowerCase();
-  const res = await fetch(`https://api.nuget.org/v3-flatcontainer/${id}/${ver}/${id}.nuspec`);
-  if (!res.ok) {
-    throw new Error(`NuGet returned ${res.status} for ${name} ${version}`);
+  const sources = resolveNugetSources(name, projectDir);
+  const errors: string[] = [];
+  for (const source of sources) {
+    const flat = await getNugetFlatContainer(source);
+    if (!flat) {
+      continue;
+    }
+    try {
+      const res = await fetch(joinUrl(flat.base, `${id}/${ver}/${id}.nuspec`), {
+        headers: flat.headers,
+      });
+      if (res.status === 404) {
+        continue;
+      }
+      if (!res.ok) {
+        errors.push(`${source.key}: ${res.status}`);
+        continue;
+      }
+      return parseNuspecDeps(await res.text(), targetFramework);
+    } catch (err) {
+      errors.push(`${source.key}: ${err instanceof Error ? err.message : err}`);
+    }
   }
-  return parseNuspecDeps(await res.text(), targetFramework);
+  throw new Error(
+    `NuGet nuspec unavailable for ${name} ${version}${errors.length ? ` (${errors.join('; ')})` : ''}`
+  );
 }
 
 export function parseNuspecDeps(

@@ -9,6 +9,7 @@ import {
   TreeNode,
 } from '../types';
 import { OsvService, packagesToQueries } from '../services/osvService';
+import { compareVersionsDesc } from '../services/registryService';
 
 export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   private _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined>();
@@ -16,6 +17,7 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
 
   private projects: Project[] = [];
   private scanning: Promise<void> | undefined;
+  private vulnScanning: Promise<void> | undefined;
 
   constructor(
     private providers: DependencyProvider[],
@@ -39,7 +41,73 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
     all.sort((a, b) => a.name.localeCompare(b.name));
     this.projects = all;
     // Vulnerability data arrives asynchronously; the tree refreshes again when it lands.
-    void this.scanVulnerabilities();
+    this.vulnScanning = this.scanVulnerabilities();
+    void this.vulnScanning;
+  }
+
+  /** Projects the tree can act on (excludes those that failed to parse). */
+  getProjects(): Project[] {
+    return this.projects.filter((p) => !p.error);
+  }
+
+  /** Ensure a scan has run and OSV vulnerability data has loaded (for bulk fix). */
+  async ensureVulnerabilities(): Promise<void> {
+    if (!this.scanning) {
+      this.refresh();
+    }
+    await this.scanning;
+    await this.vulnScanning;
+  }
+
+  /**
+   * Distinct vulnerable packages in a project, one entry per name (the highest vulnerable version
+   * seen is the bump baseline), with whether the package is a direct dependency.
+   */
+  getVulnerablePackages(project: Project): { name: string; version: string; isDirect: boolean }[] {
+    if (project.error) {
+      return [];
+    }
+    const provider = this.providerFor(project);
+    const highest = new Map<string, string>();
+    for (const pkg of provider.getAllPackages(project)) {
+      if (this.osv.getVulns(project.ecosystem, pkg.name, pkg.version).length === 0) {
+        continue;
+      }
+      const cur = highest.get(pkg.name);
+      // compareVersionsDesc(a, b) < 0 ⇒ a is newer than b; keep the newest vulnerable version.
+      if (cur === undefined || compareVersionsDesc(pkg.version, cur) < 0) {
+        highest.set(pkg.name, pkg.version);
+      }
+    }
+    return [...highest].map(([name, version]) => ({
+      name,
+      version,
+      isDirect: provider.locate(project, name)?.isDirect ?? false,
+    }));
+  }
+
+  /** Distinct vulnerable packages and total advisories in a project (for the project-node badge). */
+  getProjectVulnerabilitySummary(project: Project): { packages: number; advisories: number } {
+    if (project.error) {
+      return { packages: 0, advisories: 0 };
+    }
+    const provider = this.providerFor(project);
+    const seen = new Set<string>();
+    let packages = 0;
+    let advisories = 0;
+    for (const pkg of provider.getAllPackages(project)) {
+      const key = `${pkg.name}@${pkg.version}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const vulns = this.osv.getVulns(project.ecosystem, pkg.name, pkg.version);
+      if (vulns.length > 0) {
+        packages++;
+        advisories += vulns.length;
+      }
+    }
+    return { packages, advisories };
   }
 
   private async scanVulnerabilities(): Promise<void> {
@@ -56,6 +124,20 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
       }
       this._onDidChangeTreeData.fire(undefined);
     }
+  }
+
+  /** Batch-query OSV for arbitrary (ecosystem, name, version) triples (used to find safe versions). */
+  async loadSafety(
+    queries: { ecosystem: Ecosystem; name: string; version: string }[]
+  ): Promise<void> {
+    if (queries.length > 0) {
+      await this.osv.query(queries);
+    }
+  }
+
+  /** Whether a specific version has no known vulnerabilities (must be loaded via loadSafety first). */
+  isSafeVersion(ecosystem: Ecosystem, name: string, version: string): boolean {
+    return this.osv.getVulns(ecosystem, name, version).length === 0;
   }
 
   private providerFor(project: Project): DependencyProvider {
@@ -150,18 +232,45 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
   }
 
   private projectItem(project: Project): vscode.TreeItem {
-    const item = new vscode.TreeItem(project.name, vscode.TreeItemCollapsibleState.Expanded);
+    const item = new vscode.TreeItem(project.name, vscode.TreeItemCollapsibleState.Collapsed);
     item.id = `project|${project.manifestPath}`;
-    item.description = project.ecosystem;
+
+    // Vulnerability badge shows to the right of the project name (first in the description).
+    const summary = this.getProjectVulnerabilitySummary(project);
+    const description: string[] = [];
+    if (summary.packages > 0) {
+      description.push(`⚠ ${summary.packages} vulnerable`);
+    }
+    description.push(project.ecosystem);
+    item.description = description.join(' · ');
+
+    // Keep the ecosystem icon on the left; the badge on the right conveys vulnerability.
     item.iconPath = new vscode.ThemeIcon(project.ecosystem === 'npm' ? 'json' : 'project');
+
     item.contextValue = 'project';
-    item.tooltip = project.manifestPath;
+    item.tooltip = this.projectTooltip(project, summary);
     item.command = {
       command: 'dependencyExplorer.openManifest',
       title: 'Open Manifest',
       arguments: [{ kind: 'project', project }],
     };
     return item;
+  }
+
+  private projectTooltip(
+    project: Project,
+    summary: { packages: number; advisories: number }
+  ): vscode.MarkdownString {
+    const md = new vscode.MarkdownString();
+    const pm = project.packageManager === 'pnpm' ? ' · pnpm' : '';
+    md.appendMarkdown(`**${project.name}** (${project.ecosystem}${pm})\n\n`);
+    md.appendMarkdown(`${project.manifestPath}\n\n`);
+    if (summary.packages > 0) {
+      const pkgs = `${summary.packages} vulnerable package${summary.packages === 1 ? '' : 's'}`;
+      const adv = `${summary.advisories} advisor${summary.advisories === 1 ? 'y' : 'ies'}`;
+      md.appendMarkdown(`⚠️ **${pkgs}** (${adv}). Use **Fix All Vulnerabilities** to bump them.\n`);
+    }
+    return md;
   }
 
   private dependencyItem(node: DependencyNode): vscode.TreeItem {

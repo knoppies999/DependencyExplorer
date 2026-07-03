@@ -1,4 +1,10 @@
 import { Ecosystem } from '../types';
+import {
+  getNugetFlatContainer,
+  joinUrl,
+  resolveNpmFeed,
+  resolveNugetSources,
+} from './feedConfig';
 
 export interface VersionList {
   /** All published versions, newest first. */
@@ -6,10 +12,20 @@ export interface VersionList {
   latest?: string;
 }
 
-export async function fetchVersions(ecosystem: Ecosystem, name: string): Promise<VersionList> {
+/**
+ * List published versions for a package, honoring the feeds configured for `projectDir`
+ * (custom npm registry / private NuGet sources). Falls back to the public registries when the
+ * project has no relevant `.npmrc` / `NuGet.config`.
+ */
+export async function fetchVersions(
+  ecosystem: Ecosystem,
+  name: string,
+  projectDir: string
+): Promise<VersionList> {
   if (ecosystem === 'npm') {
-    const res = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}`, {
-      headers: { accept: 'application/vnd.npm.install-v1+json' },
+    const feed = resolveNpmFeed(name, projectDir);
+    const res = await fetch(joinUrl(feed.baseUrl, encodeURIComponent(name)), {
+      headers: { ...feed.headers, accept: 'application/vnd.npm.install-v1+json' },
     });
     if (!res.ok) {
       throw new Error(`npm registry returned ${res.status} for ${name}`);
@@ -22,14 +38,45 @@ export async function fetchVersions(ecosystem: Ecosystem, name: string): Promise
     return { versions, latest: data['dist-tags']?.latest };
   }
 
-  const res = await fetch(
-    `https://api.nuget.org/v3-flatcontainer/${name.toLowerCase()}/index.json`
-  );
-  if (!res.ok) {
-    throw new Error(`NuGet registry returned ${res.status} for ${name}`);
+  return fetchNugetVersions(name, projectDir);
+}
+
+async function fetchNugetVersions(name: string, projectDir: string): Promise<VersionList> {
+  const sources = resolveNugetSources(name, projectDir);
+  const all = new Set<string>();
+  const errors: string[] = [];
+  for (const source of sources) {
+    try {
+      const flat = await getNugetFlatContainer(source);
+      if (!flat) {
+        continue;
+      }
+      const res = await fetch(joinUrl(flat.base, `${name.toLowerCase()}/index.json`), {
+        headers: flat.headers,
+      });
+      if (res.status === 404) {
+        continue; // package simply isn't on this feed
+      }
+      if (!res.ok) {
+        errors.push(`${source.key}: ${res.status}`);
+        continue;
+      }
+      const data = (await res.json()) as { versions?: string[] };
+      for (const v of data.versions ?? []) {
+        all.add(v);
+      }
+    } catch (err) {
+      errors.push(`${source.key}: ${err instanceof Error ? err.message : err}`);
+    }
   }
-  const data = (await res.json()) as { versions?: string[] };
-  const versions = (data.versions ?? []).sort(compareVersionsDesc);
+
+  if (all.size === 0) {
+    if (errors.length > 0) {
+      throw new Error(`NuGet feed error for ${name} (${errors.join('; ')})`);
+    }
+    throw new Error(`No versions of ${name} found on the configured NuGet sources`);
+  }
+  const versions = [...all].sort(compareVersionsDesc);
   const latest = versions.find((v) => !isPrerelease(v)) ?? versions[0];
   return { versions, latest };
 }

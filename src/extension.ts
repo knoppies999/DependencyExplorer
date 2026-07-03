@@ -20,7 +20,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Refresh when manifests or lock/assets files change (e.g. after npm install / dotnet restore).
   const watcher = vscode.workspace.createFileSystemWatcher(
-    '**/{package.json,package-lock.json,*.csproj,*.fsproj,*.vbproj,project.assets.json,Directory.Packages.props}'
+    '**/{package.json,package-lock.json,pnpm-lock.yaml,pnpm-workspace.yaml,.npmrc,NuGet.config,nuget.config,*.csproj,*.fsproj,*.vbproj,project.assets.json,Directory.Packages.props}'
   );
   let debounce: NodeJS.Timeout | undefined;
   const scheduleRefresh = (uri: vscode.Uri) => {

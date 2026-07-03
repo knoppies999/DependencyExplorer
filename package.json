@@ -51,7 +51,7 @@
     "viewsWelcome": [
       {
         "view": "dependencyExplorer.tree",
-        "contents": "No npm or NuGet projects found in this workspace.\nnpm projects need a package-lock.json (run npm install).\nNuGet projects need obj/project.assets.json (run dotnet restore).\n[Refresh](command:dependencyExplorer.refresh)"
+        "contents": "No npm, pnpm or NuGet projects found in this workspace.\nnpm/pnpm projects need a package-lock.json or pnpm-lock.yaml (run npm install / pnpm install).\nNuGet projects need obj/project.assets.json (run dotnet restore).\n[Refresh](command:dependencyExplorer.refresh)"
       }
     ],
     "commands": [
@@ -66,6 +66,18 @@
         "title": "Update Package Across All Projects…",
         "category": "Dependency Explorer",
         "icon": "$(replace-all)"
+      },
+      {
+        "command": "dependencyExplorer.fixAllVulnerabilities",
+        "title": "Fix All Vulnerabilities…",
+        "category": "Dependency Explorer",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "dependencyExplorer.fixProjectVulnerabilities",
+        "title": "Fix Vulnerabilities in This Project…",
+        "category": "Dependency Explorer",
+        "icon": "$(shield)"
       },
       {
         "command": "dependencyExplorer.updateDependency",
@@ -99,18 +111,27 @@
         {
           "command": "dependencyExplorer.openManifest",
           "when": "false"
+        },
+        {
+          "command": "dependencyExplorer.fixProjectVulnerabilities",
+          "when": "false"
         }
       ],
       "view/title": [
         {
-          "command": "dependencyExplorer.fixAcrossProjects",
+          "command": "dependencyExplorer.fixAllVulnerabilities",
           "when": "view == dependencyExplorer.tree",
           "group": "navigation@1"
         },
         {
-          "command": "dependencyExplorer.refresh",
+          "command": "dependencyExplorer.fixAcrossProjects",
           "when": "view == dependencyExplorer.tree",
           "group": "navigation@2"
+        },
+        {
+          "command": "dependencyExplorer.refresh",
+          "when": "view == dependencyExplorer.tree",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -133,6 +154,15 @@
           "when": "view == dependencyExplorer.tree && viewItem == dep:transitive"
         },
         {
+          "command": "dependencyExplorer.fixProjectVulnerabilities",
+          "when": "view == dependencyExplorer.tree && viewItem == project",
+          "group": "inline@1"
+        },
+        {
+          "command": "dependencyExplorer.fixProjectVulnerabilities",
+          "when": "view == dependencyExplorer.tree && viewItem == project"
+        },
+        {
           "command": "dependencyExplorer.openManifest",
           "when": "view == dependencyExplorer.tree && viewItem == project"
         }
@@ -145,7 +175,8 @@
     "vscode:prepublish": "npm run compile"
   },
   "dependencies": {
-    "jsonc-parser": "^3.3.1"
+    "jsonc-parser": "^3.3.1",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

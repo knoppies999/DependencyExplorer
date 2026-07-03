@@ -23,6 +23,11 @@ export function npmAddOverride(text: string, name: string, version: string): str
   return applyEdits(text, modify(text, ['overrides', name], version, JSON_FORMAT));
 }
 
+/** Pin a transitive dependency via the pnpm "pnpm.overrides" field (workspace-root package.json). */
+export function pnpmAddOverride(text: string, name: string, version: string): string {
+  return applyEdits(text, modify(text, ['pnpm', 'overrides', name], version, JSON_FORMAT));
+}
+
 /* --------------------------------- NuGet --------------------------------- */
 
 /**
