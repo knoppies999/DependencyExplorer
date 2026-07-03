@@ -1,8 +1,8 @@
 {
   "name": "dependency-explorer",
   "displayName": "Dependency Explorer",
-  "description": "Full dependency tree (including transitive dependencies) for npm and NuGet projects, with vulnerability flags and one-click update or transitive override.",
-  "version": "0.0.1",
+  "description": "Full dependency tree (including transitive dependencies) for npm, pnpm and NuGet projects, with vulnerability flags and one-click update, transitive override, or bulk fix.",
+  "version": "1.0.0",
   "publisher": "RuanduPlessis",
   "license": "MIT",
   "repository": {
@@ -25,6 +25,7 @@
     "transitive dependencies",
     "vulnerabilities",
     "npm",
+    "pnpm",
     "nuget"
   ],
   "main": "./out/extension.js",
