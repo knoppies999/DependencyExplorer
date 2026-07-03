@@ -30,6 +30,14 @@ export interface Project {
   name: string;
   /** When set, the project node shows this message instead of dependencies. */
   error?: string;
+  /**
+   * npm ecosystem only: which package manager owns this project. Drives the install command and
+   * where transitive overrides are written (npm → this package.json's "overrides"; pnpm → the
+   * workspace-root package.json's "pnpm.overrides").
+   */
+  packageManager?: 'npm' | 'pnpm';
+  /** pnpm only: directory of the root package.json that owns `pnpm.overrides` (workspace root). */
+  workspaceRoot?: string;
 }
 
 export interface ProjectNode {
