@@ -30,6 +30,10 @@
   ],
   "main": "./out/extension.js",
   "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#3A2F8F",
+    "theme": "dark"
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [
