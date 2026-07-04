@@ -5,3 +5,7 @@ tsconfig.json
 **/*.map
 **/*.ts
 .gitignore
+CLAUDE.md
+ARCHITECTURE.md
+media/hero-banner.svg
+media/tree-preview.svg

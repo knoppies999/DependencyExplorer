@@ -14,6 +14,10 @@ fixed in one click.** No more `npm ls`, no more guessing which project pulled in
 transitive package. Works across npm, pnpm and NuGet, and across every project in your workspace
 at once.
 
+<p align="left">
+  <img src="media/tree-preview.png" alt="The dependency tree showing direct and transitive dependencies with vulnerable packages flagged" width="340" />
+</p>
+
 ## Why you'll want this
 
 - **See the whole tree, not just `package.json`.** Every project in your workspace — npm, pnpm,
