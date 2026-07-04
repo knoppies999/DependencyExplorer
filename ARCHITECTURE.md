@@ -17,6 +17,13 @@ transitive one — editing the manifest files in place. Extra features layered o
   all / only-origin / **choose-specific-projects** scope picker.
 - **Fix all vulnerabilities** across a single / all / chosen subset of projects: bumps each
   vulnerable package to its nearest safe version (direct → update, transitive → pin). Re-runnable.
+- **Update all packages to latest** across a single / all / chosen subset of projects: bumps *every*
+  package (not just vulnerable ones) to its latest published version (direct → update, transitive →
+  pin), skipping anything already current. Directs start checked in the confirm list; transitive
+  pins are opt-in (unchecked by default) since pinning the whole transitive tree is far more invasive.
+- **Always-latest list** (`dependencyExplorer.alwaysLatestPackages` setting): packages that always
+  jump to their latest version during *any* upgrade — including the vulnerability fix flow (a matched
+  package targets latest instead of nearest-safe, provided that latest is itself safe).
 - A pre-apply **preview** webview diffing the target version's declared dependencies vs the current.
 - Central Package Management (CPM) support for NuGet, including transitive pinning.
 - **Custom feeds:** version lists and preview diffs read the project's own `.npmrc` / `NuGet.config`
@@ -96,7 +103,12 @@ via the pure functions in `manifestEditor.ts`.
   project `error`.
 - **`providers/pnpmGraph.ts`** — `buildPnpmGraphs(lockText)` parses `pnpm-lock.yaml` **v6** (keys
   prefixed `/`, edges inline in `packages`) and **v9** (keys unprefixed, edges in `snapshots`),
-  returning one `ResolvedGraph` per importer. Child keys are rebuilt as `prefix+name@versionRef`
+  returning one `ResolvedGraph` per importer. **pnpm 11** keeps `lockfileVersion: '9.0'` but writes a
+  **multi-document YAML** — an "env" document (`configDependencies`/`packageManagerDependencies`) plus
+  the real project document (`importers`/`packages`/`snapshots`). `selectProjectLockfile` runs
+  `parseAllDocuments` and picks the document that actually carries the graph, so the v9 logic below is
+  reused unchanged; **don't** revert to the single-doc `parse()` (it only sees the env document and
+  would report the whole workspace as an unsupported/empty lockfile). Child keys are rebuilt as `prefix+name@versionRef`
   (peer suffixes preserved); `link:` workspace refs resolve to nothing. Unknown version → throws,
   surfaced as project `error`. The `packages`/`snapshots` maps are shared across importers, so each
   importer's `allPackages()`/`keys()` are scoped to the packages **reachable from its own directs**
@@ -126,7 +138,10 @@ via the pure functions in `manifestEditor.ts`.
   stable).
 - **`services/fixPlanner.ts`** — pure `nearestSafeVersion(versionsDesc, current, isSafe, compare,
   isPrerelease)` (smallest version above `current` that `isSafe` accepts, stable preferred) +
-  `FixPlanItem` type. Used by the "fix all vulnerabilities" flow; no network/`vscode`, so unit-tested.
+  `FixPlanItem` type (reused by both the fix-vulnerabilities and update-to-latest flows). No
+  network/`vscode`, so unit-tested.
+- **`services/packageMatch.ts`** — pure `matchesAnyPattern(name, patterns)` for the always-latest
+  list: case-insensitive, `*` wildcards (e.g. `@myorg/*`), blanks ignored. `vscode`-free, unit-tested.
 - **`services/feedConfig.ts`** — **`vscode`-free** feed resolver (so it's unit-testable). Parses
   `.npmrc` (project-dir-upward + `~`) → `resolveNpmFeed(name, dir)` = `{baseUrl, headers}` (scoped
   registry, `_authToken`/`_auth`/`username`+`_password`, `${ENV}` expansion). Parses `NuGet.config`
@@ -150,7 +165,10 @@ via the pure functions in `manifestEditor.ts`.
   true on Apply, false on Cancel/dispose.
 - **`services/manifestEditor.ts`** — **pure string→string** edit functions (the only place manifest
   text is mutated; all unit-tested). npm: `npmUpdateDependency` (preserves `^`/`~`/exact range
-  style), `npmAddOverride`, `pnpmAddOverride` (writes `pnpm.overrides`). NuGet: `csprojUpdateVersion`
+  style), `npmAddOverride` (when the package is *also* a direct dependency, bumps that direct range
+  and writes the override as npm's `$name` self-reference — a literal version there throws `EOVERRIDE:
+  Override … conflicts with direct dependency` at install), `pnpmAddOverride` (writes `pnpm.overrides`).
+  NuGet: `csprojUpdateVersion`
   (matches `Version="..."`, then
   `VersionOverride="..."`, then `<Version>..</Version>` element; returns `undefined` if none —
   signals caller to try props), `propsUpdateVersion`, `propsSetPackageVersion`,
@@ -166,7 +184,12 @@ via the pure functions in `manifestEditor.ts`.
   ecosystem **and** package manager (pnpm transitive → `pnpmAddOverride` on the workspace-root
   `package.json`). `writeFileWithUndo` uses a `WorkspaceEdit` + `save()`. `offerInstall` groups
   affected dirs by install command (`npm install` / `pnpm install` at the workspace root /
-  `dotnet restore`) and spawns a terminal per group. `fixAllVulnerabilities(tree, project?)` is the
+  `dotnet restore`) and runs each via `runInstall` — `spawn` (shell) streaming to the "Dependency
+  Explorer" output channel. On a non-zero exit whose output `isPeerConflict` recognises (`ERESOLVE`),
+  it offers a one-click retry with the ecosystem's accept-anyway flag (`peerDepsRetryFlag`: npm
+  `--legacy-peer-deps`, pnpm `--no-strict-peer-dependencies`) — a vuln bump can pick a safe version
+  that strands the *peer* graph, which the resolver-free planner can't foresee; the pure detection
+  lives in `services/installRetry.ts`. `fixAllVulnerabilities(tree, project?)` is the
   bulk flow, reached by **two** command ids: `fixAllVulnerabilities` (title-bar/palette, ignores any
   arg so it always shows the scope picker) and `fixProjectVulnerabilities` (project node inline/context,
   passes `node.project`). Keeping them separate avoids VS Code silently handing the title button the
@@ -175,7 +198,20 @@ via the pure functions in `manifestEditor.ts`.
   through `tree.loadSafety`/`isSafeVersion`) → a `canPickMany` summary checklist → `applyToProject`
   per item → `offerInstall`. Direct vulns update, transitive vulns pin; **no resolver**, so it's
   re-runnable (directs first, then reinstall/refresh drops fixed transitives; anything still flagged
-  gets pinned on the next run).
+  gets pinned on the next run). `buildFixPlan` also honors the **always-latest** setting
+  (`alwaysLatestPatterns()` → `matchesAnyPattern`): a matched vulnerable package targets its `latest`
+  version instead of nearest-safe, as long as `latest` is newer and OSV-safe (its `latest` is added
+  to the safety batch). `updateAllToLatest(tree, project?)` is the parallel "bump everything" flow,
+  reached by `updateAllToLatest` (title-bar/palette, ignores arg) and `updateProjectToLatest` (project
+  context menu). It uses `tree.ensureScanned()` (no OSV needed) → scope → `buildUpdatePlan` (every
+  distinct package via `tree.getAllDistinctPackages`, target = registry `latest`, packages already
+  current dropped) → the same checklist/apply/install path, but passing `confirmSelection`'s
+  `isPicked` predicate (`item.isDirect || matchesAnyPattern(name, alwaysLatest)`) so ordinary
+  transitive pins start **unchecked** while directs and always-latest packages start checked (the
+  latter also tagged `★ always-latest` via the `tag` callback). The shared pieces — `chooseProjectScope`,
+  `confirmSelection`, `applyPlan`, `scopeLabel` — serve both flows. `addToAlwaysLatest(name)` (dep
+  context menu) appends a package to the `alwaysLatestPackages` setting (workspace scope when a folder
+  is open, else global).
 
 ## 5. Editing model (what each action writes)
 
@@ -229,10 +265,13 @@ The suites and what they cover (52 tests total when last run, all green):
   tree and asserts every ancestor gets `subtreeVulnerable` — the regression test for the icon bug (4).
 - `feed-pnpm-test.js` — pure `feedConfig` (`.npmrc` scoped registry + `${ENV}` token + auth-by-origin;
   `NuGet.config` clear/disabled/clear-text-creds/`packageSourceMapping`), `pnpmGraph` (v6 + v9 +
-  workspace importers + unsupported-version throw), and `pnpmAddOverride` (11). The `npmGraph` walk-up
+  pnpm 11 multi-document + env-doc-ignored + order-independence + workspace importers +
+  unsupported-version throw), and `pnpmAddOverride` (11). The `npmGraph` walk-up
   can be spot-checked with a nested-`node_modules` sample (root `x@1` vs a's nested `x@2`).
 - `fixplan-test.js` — pure `nearestSafeVersion`: nearest safe above current, skips vulnerable
   candidates, stable-over-prerelease preference, undefined when none safe, 4-part NuGet ordering (7).
+- `match-test.js` — pure `matchesAnyPattern` (always-latest list): exact case-insensitive match,
+  trimming, blanks ignored, `*` scope/prefix/contains wildcards, regex metachars treated literally (16).
 
 Compile before running: `Set-Location <repo>; $env:Path="$env:ProgramFiles\nodejs;$env:Path"; npm run compile`.
 
@@ -272,4 +311,5 @@ Compile before running: `Set-Location <repo>; $env:Path="$env:ProgramFiles\nodej
   legacy V2 feeds are skipped. DPAPI-encrypted NuGet `<Password>` can't be decrypted cross-platform,
   so those sources are queried anonymously (use `<ClearTextPassword>` + an env-var token).
 - pnpm `link:` workspace dependencies show as unresolved leaves (not walked into the linked package).
-  pnpm lockfile support is v6 + v9; other versions surface a friendly project error.
+  pnpm lockfile support is v6 + v9 + the pnpm 11 multi-document layout (all `lockfileVersion` 6/9);
+  other versions surface a friendly project error.

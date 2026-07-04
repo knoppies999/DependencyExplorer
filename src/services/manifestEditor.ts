@@ -18,8 +18,28 @@ export function npmUpdateDependency(text: string, name: string, version: string)
   return applyEdits(text, modify(text, [section, name], prefix + version, JSON_FORMAT));
 }
 
-/** Pin a transitive dependency via the package.json "overrides" field. */
+const NPM_DIRECT_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies'];
+
+/**
+ * Pin a transitive dependency via the package.json "overrides" field.
+ *
+ * npm rejects (`EOVERRIDE`) an override whose key is also a direct dependency unless the override
+ * value references that dependency with npm's `$name` syntax. So when the package is *also* a direct
+ * dependency here, bump the direct range to the safe version and point the override at it with
+ * `$name` (forcing every nested copy to the same resolution); otherwise write the literal version.
+ */
 export function npmAddOverride(text: string, name: string, version: string): string {
+  const pkg = parseJsonc(text) ?? {};
+  const directSection = NPM_DIRECT_SECTIONS.find((s) => pkg[s]?.[name] !== undefined);
+  if (directSection) {
+    const current: string = pkg[directSection][name];
+    const prefix = /^[\^~]/.test(current) ? current[0] : '';
+    const bumped = applyEdits(
+      text,
+      modify(text, [directSection, name], prefix + version, JSON_FORMAT)
+    );
+    return applyEdits(bumped, modify(bumped, ['overrides', name], '$' + name, JSON_FORMAT));
+  }
   return applyEdits(text, modify(text, ['overrides', name], version, JSON_FORMAT));
 }
 
@@ -100,8 +120,37 @@ export function propsUpdateVersion(xml: string, name: string, version: string): 
   return regex.test(xml) ? xml.replace(regex, `$1${version}$2`) : undefined;
 }
 
-/** Add a direct <PackageReference> pin for a transitive package (NuGet's direct-wins rule). */
+/** True if the project file already declares a <PackageReference Include="name" …>. */
+function hasPackageReference(xml: string, name: string): boolean {
+  return new RegExp(
+    `<PackageReference\\b[^>]*\\bInclude\\s*=\\s*"${escapeRegExp(name)}"`,
+    'i'
+  ).test(xml);
+}
+
+/**
+ * Add a direct <PackageReference> pin for a transitive package (NuGet's direct-wins rule).
+ *
+ * If the project already references the package directly, update that reference in place instead of
+ * inserting a second one: NuGet rejects duplicate PackageReference items (`NU1504`) at restore. With
+ * a version we bump the existing reference (adding a Version attribute if it had none); a versionless
+ * call (CPM transitive-pin promotion) is a no-op when the reference is already present.
+ */
 export function csprojAddPackageReference(xml: string, name: string, version?: string): string {
+  if (hasPackageReference(xml, name)) {
+    if (!version) {
+      return xml; // already a direct reference; nothing to promote.
+    }
+    const updated = csprojUpdateVersion(xml, name, version);
+    if (updated !== undefined) {
+      return updated;
+    }
+    // Existing reference has no Version — add one so the pin takes effect.
+    return xml.replace(
+      new RegExp(`(<PackageReference\\b[^>]*\\bInclude\\s*=\\s*"${escapeRegExp(name)}")`, 'i'),
+      `$1 Version="${version}"`
+    );
+  }
   const versionAttr = version ? ` Version="${version}"` : '';
   return insertIntoItemGroup(
     xml,

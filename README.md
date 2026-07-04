@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="media/hero-banner.svg" alt="Dependency Explorer" width="100%" />
+  <img src="media/hero-banner.png" alt="Dependency Explorer" width="100%" />
 </p>
 
 <p align="center">
@@ -14,11 +14,6 @@ fixed in one click.** No more `npm ls`, no more guessing which project pulled in
 transitive package. Works across npm, pnpm and NuGet, and across every project in your workspace
 at once.
 
-<p align="center">
-  <img src="media/tree-preview.svg" alt="Dependency Explorer tree view, showing project nodes with vulnerability badges and an expanded dependency with a vulnerability tooltip" width="100%" />
-  <br><sub><em>Illustrative preview — install the extension to see it against your own dependencies.</em></sub>
-</p>
-
 ## Why you'll want this
 
 - **See the whole tree, not just `package.json`.** Every project in your workspace — npm, pnpm,
@@ -32,6 +27,9 @@ at once.
   Preview the blast radius first; nothing is written until you click Apply.
 - **Fix *everything* at once.** One command finds every vulnerable package across a single project,
   a chosen subset, or your entire workspace, and bumps each to the nearest safe version.
+- **Or just get current.** A second command bumps *every* package — not only the vulnerable ones —
+  to its latest published version, and you can flag the packages you always want on latest so they
+  jump there on any upgrade.
 
 ## ✨ Features
 
@@ -45,6 +43,16 @@ at once.
   your whole workspace. Bumps every vulnerable package to the nearest non-vulnerable version:
   direct dependencies are updated, transitive ones are pinned. Re-run it after install to mop up
   anything a resolver needs a second pass on.
+- ⬆️ **Update All Packages to Latest** — same three scopes, but for *every* package rather than just
+  the vulnerable ones. Each is bumped to its latest published version; anything already current is
+  skipped. Direct dependencies start checked in the confirmation list, while transitive pins are
+  opt-in (unchecked) — so a routine "update to latest" bumps your directs without pinning the whole
+  transitive tree unless you ask it to.
+- ⭐ **Always-latest list** — flag packages you always want on the newest version (right-click a
+  dependency → *Always Update to Latest Version*, or the `dependencyExplorer.alwaysLatestPackages`
+  setting, which supports `*` wildcards like `@myorg/*`). Those packages jump straight to latest on
+  any upgrade — including when fixing vulnerabilities — instead of stopping at the nearest safe
+  version.
 - ↑ **Update** a direct dependency or 📌 **override/pin** a transitive one, with the manifest edited
   in place — npm range style preserved, pnpm `overrides`, NuGet `<PackageReference>`/Central
   Package Management all handled automatically.
@@ -72,8 +80,8 @@ at once.
 | Ecosystem | Source of truth | Requirement |
 | --- | --- | --- |
 | npm | `package-lock.json` (v2/v3 `packages` map, real node_modules-style resolution) | run `npm install` once (npm 7+) |
-| pnpm | `pnpm-lock.yaml` (v6 or v9, including workspaces) | run `pnpm install` once |
-| NuGet | `obj/project.assets.json` | run `dotnet restore` once |
+| pnpm | `pnpm-lock.yaml` (v6, v9, and the pnpm 11 multi-document layout, including workspaces) | run `pnpm install` once (pnpm 8–11) |
+| NuGet | `obj/project.assets.json` (classic + Central Package Management, up to .NET 10 / `net10.0`) | run `dotnet restore` once |
 
 These are the *resolved* graphs, so versions match exactly what your build uses — not what a
 semver range merely allows.
@@ -154,6 +162,7 @@ then install it via *Extensions: Install from VSIX…*.
 - [`src/services/manifestEditor.ts`](src/services/manifestEditor.ts) — pure text edits for `package.json`, `.csproj`, `Directory.Packages.props`
 - [`src/services/previewService.ts`](src/services/previewService.ts) — fetches a version's declared dependencies and diffs current vs target
 - [`src/services/fixPlanner.ts`](src/services/fixPlanner.ts) — nearest-safe-version resolution for bulk fixes
+- [`src/services/packageMatch.ts`](src/services/packageMatch.ts) — case-insensitive, wildcard package-name matching for the always-latest list
 - [`src/ui/previewPanel.ts`](src/ui/previewPanel.ts) — webview showing the transitive-dependency impact, with Apply / Cancel
 - [`src/commands.ts`](src/commands.ts) — update/override/bulk-fix commands, preview + confirm, cross-project scope picker, install prompt
 

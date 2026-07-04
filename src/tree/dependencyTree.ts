@@ -50,31 +50,40 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
     return this.projects.filter((p) => !p.error);
   }
 
-  /** Ensure a scan has run and OSV vulnerability data has loaded (for bulk fix). */
-  async ensureVulnerabilities(): Promise<void> {
+  /** Ensure a scan has run (manifests parsed) — used by flows that don't need OSV data. */
+  async ensureScanned(): Promise<void> {
     if (!this.scanning) {
       this.refresh();
     }
     await this.scanning;
+  }
+
+  /** Ensure a scan has run and OSV vulnerability data has loaded (for bulk fix). */
+  async ensureVulnerabilities(): Promise<void> {
+    await this.ensureScanned();
     await this.vulnScanning;
   }
 
   /**
-   * Distinct vulnerable packages in a project, one entry per name (the highest vulnerable version
-   * seen is the bump baseline), with whether the package is a direct dependency.
+   * Distinct packages in a project, one entry per name (the newest resolved version is the bump
+   * baseline), with whether the package is a direct dependency. `keep` filters which packages to
+   * include; pass `() => true` for every package.
    */
-  getVulnerablePackages(project: Project): { name: string; version: string; isDirect: boolean }[] {
+  private collectDistinct(
+    project: Project,
+    keep: (name: string, version: string) => boolean
+  ): { name: string; version: string; isDirect: boolean }[] {
     if (project.error) {
       return [];
     }
     const provider = this.providerFor(project);
     const highest = new Map<string, string>();
     for (const pkg of provider.getAllPackages(project)) {
-      if (this.osv.getVulns(project.ecosystem, pkg.name, pkg.version).length === 0) {
+      if (!keep(pkg.name, pkg.version)) {
         continue;
       }
       const cur = highest.get(pkg.name);
-      // compareVersionsDesc(a, b) < 0 ⇒ a is newer than b; keep the newest vulnerable version.
+      // compareVersionsDesc(a, b) < 0 ⇒ a is newer than b; keep the newest resolved version.
       if (cur === undefined || compareVersionsDesc(pkg.version, cur) < 0) {
         highest.set(pkg.name, pkg.version);
       }
@@ -84,6 +93,22 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
       version,
       isDirect: provider.locate(project, name)?.isDirect ?? false,
     }));
+  }
+
+  /**
+   * Distinct vulnerable packages in a project, one entry per name (the highest vulnerable version
+   * seen is the bump baseline), with whether the package is a direct dependency.
+   */
+  getVulnerablePackages(project: Project): { name: string; version: string; isDirect: boolean }[] {
+    return this.collectDistinct(
+      project,
+      (name, version) => this.osv.getVulns(project.ecosystem, name, version).length > 0
+    );
+  }
+
+  /** Every distinct package in a project (for "update all to latest"), newest version per name. */
+  getAllDistinctPackages(project: Project): { name: string; version: string; isDirect: boolean }[] {
+    return this.collectDistinct(project, () => true);
   }
 
   /** Distinct vulnerable packages and total advisories in a project (for the project-node badge). */

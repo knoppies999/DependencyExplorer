@@ -1,4 +1,4 @@
-import { parse as parseYaml } from 'yaml';
+import { parseAllDocuments } from 'yaml';
 import { DepRef, GraphEntry, ResolvedGraph } from './resolvedGraph';
 
 export interface PnpmImporterGraph {
@@ -17,26 +17,31 @@ interface PackageValue {
   optionalDependencies?: Record<string, string>;
 }
 
+interface LockfileDoc {
+  lockfileVersion?: string | number;
+  dependencies?: ImporterSection['dependencies'];
+  devDependencies?: ImporterSection['devDependencies'];
+  importers?: Record<string, ImporterSection>;
+  packages?: Record<string, PackageValue>;
+  snapshots?: Record<string, PackageValue>;
+}
+
 /**
- * Parse a `pnpm-lock.yaml` (v6 or v9) into one ResolvedGraph per importer (workspace package).
- * v6 keeps the dependency graph inline in `packages` (keys prefixed with `/`); v9 splits package
- * metadata (`packages`) from the resolved graph (`snapshots`, keys without a prefix). Throws for
- * unsupported lockfile versions so the provider can surface a friendly project error.
+ * Parse a `pnpm-lock.yaml` (v6, v9, or the pnpm 11 multi-document layout) into one ResolvedGraph
+ * per importer (workspace package). v6 keeps the dependency graph inline in `packages` (keys
+ * prefixed with `/`); v9 splits package metadata (`packages`) from the resolved graph (`snapshots`,
+ * keys without a prefix). pnpm 11 keeps `lockfileVersion: '9.0'` but splits the file into multiple
+ * YAML documents — an "env" document (config/packageManager deps) plus the real project document —
+ * so we select the document that actually carries the dependency graph. Throws for unsupported
+ * lockfile versions so the provider can surface a friendly project error.
  */
 export function buildPnpmGraphs(lockText: string): PnpmImporterGraph[] {
-  const doc = (parseYaml(lockText) ?? {}) as {
-    lockfileVersion?: string | number;
-    dependencies?: ImporterSection['dependencies'];
-    devDependencies?: ImporterSection['devDependencies'];
-    importers?: Record<string, ImporterSection>;
-    packages?: Record<string, PackageValue>;
-    snapshots?: Record<string, PackageValue>;
-  };
+  const doc = selectProjectLockfile(lockText);
 
   const major = parseInt(String(doc.lockfileVersion ?? ''), 10);
   if (major !== 6 && major !== 9) {
     throw new Error(
-      `pnpm lockfile version ${doc.lockfileVersion ?? '?'} is not supported — run "pnpm install" with pnpm 8 or 9.`
+      `pnpm lockfile version ${doc.lockfileVersion ?? '?'} is not supported — run "pnpm install" with pnpm 8, 9, 10 or 11.`
     );
   }
 
@@ -86,6 +91,26 @@ export function buildPnpmGraphs(lockText: string): PnpmImporterGraph[] {
     };
     return { importerPath, graph };
   });
+}
+
+/**
+ * Pick the project lockfile out of a (possibly multi-document) pnpm-lock.yaml. Single-document
+ * lockfiles (v6/v9) return their only document. pnpm 11 writes a multi-document file: an "env"
+ * document holding `configDependencies`/`packageManagerDependencies` and the real project document
+ * holding `importers`/`packages`/`snapshots` (or top-level `dependencies` for a non-workspace repo).
+ * We select whichever document actually carries the dependency graph.
+ */
+function selectProjectLockfile(lockText: string): LockfileDoc {
+  const docs = parseAllDocuments(lockText)
+    .map((d) => d.toJSON() as unknown)
+    .filter((d): d is LockfileDoc => !!d && typeof d === 'object');
+  if (docs.length === 0) {
+    return {};
+  }
+  const project = docs.find(
+    (d) => d.importers || d.packages || d.snapshots || d.dependencies || d.devDependencies
+  );
+  return project ?? docs[docs.length - 1];
 }
 
 /** Keys reachable from a set of direct deps by following child edges (cycle-safe). */

@@ -2,7 +2,7 @@
   "name": "dependency-explorer",
   "displayName": "Dependency Explorer",
   "description": "Full dependency tree (including transitive dependencies) for npm, pnpm and NuGet projects, with vulnerability flags and one-click update, transitive override, or bulk fix.",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "publisher": "RuanduPlessis",
   "license": "MIT",
   "repository": {
@@ -35,6 +35,19 @@
     "theme": "dark"
   },
   "contributes": {
+    "configuration": {
+      "title": "Dependency Explorer",
+      "properties": {
+        "dependencyExplorer.alwaysLatestPackages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Packages that should always be bumped to their **latest** published version during any upgrade — both **Fix All Vulnerabilities** and **Update All Packages to Latest**. Names are matched case-insensitively, and `*` is a wildcard (e.g. `@myorg/*` matches every package in that scope). Add a package quickly with **Always Update to Latest Version** in a dependency's right-click menu."
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -85,6 +98,24 @@
         "icon": "$(shield)"
       },
       {
+        "command": "dependencyExplorer.updateAllToLatest",
+        "title": "Update All Packages to Latest…",
+        "category": "Dependency Explorer",
+        "icon": "$(arrow-circle-up)"
+      },
+      {
+        "command": "dependencyExplorer.updateProjectToLatest",
+        "title": "Update All Packages in This Project to Latest…",
+        "category": "Dependency Explorer",
+        "icon": "$(arrow-circle-up)"
+      },
+      {
+        "command": "dependencyExplorer.addToAlwaysLatest",
+        "title": "Always Update to Latest Version",
+        "category": "Dependency Explorer",
+        "icon": "$(star)"
+      },
+      {
         "command": "dependencyExplorer.updateDependency",
         "title": "Update Version…",
         "category": "Dependency Explorer",
@@ -120,6 +151,14 @@
         {
           "command": "dependencyExplorer.fixProjectVulnerabilities",
           "when": "false"
+        },
+        {
+          "command": "dependencyExplorer.updateProjectToLatest",
+          "when": "false"
+        },
+        {
+          "command": "dependencyExplorer.addToAlwaysLatest",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -129,14 +168,19 @@
           "group": "navigation@1"
         },
         {
-          "command": "dependencyExplorer.fixAcrossProjects",
+          "command": "dependencyExplorer.updateAllToLatest",
           "when": "view == dependencyExplorer.tree",
           "group": "navigation@2"
         },
         {
-          "command": "dependencyExplorer.refresh",
+          "command": "dependencyExplorer.fixAcrossProjects",
           "when": "view == dependencyExplorer.tree",
           "group": "navigation@3"
+        },
+        {
+          "command": "dependencyExplorer.refresh",
+          "when": "view == dependencyExplorer.tree",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -159,12 +203,21 @@
           "when": "view == dependencyExplorer.tree && viewItem == dep:transitive"
         },
         {
+          "command": "dependencyExplorer.addToAlwaysLatest",
+          "when": "view == dependencyExplorer.tree && (viewItem == dep:direct || viewItem == dep:transitive)",
+          "group": "1_modify@2"
+        },
+        {
           "command": "dependencyExplorer.fixProjectVulnerabilities",
           "when": "view == dependencyExplorer.tree && viewItem == project",
           "group": "inline@1"
         },
         {
           "command": "dependencyExplorer.fixProjectVulnerabilities",
+          "when": "view == dependencyExplorer.tree && viewItem == project"
+        },
+        {
+          "command": "dependencyExplorer.updateProjectToLatest",
           "when": "view == dependencyExplorer.tree && viewItem == project"
         },
         {

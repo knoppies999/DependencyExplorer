@@ -1,9 +1,12 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
+import { isPeerConflict, peerDepsRetryFlag } from './services/installRetry';
 import { DependencyNode, Ecosystem, PackageLocation, Project, ProjectNode } from './types';
 import { compareVersionsDesc, fetchVersions, isPrerelease } from './services/registryService';
 import { FixPlanItem, nearestSafeVersion } from './services/fixPlanner';
+import { matchesAnyPattern } from './services/packageMatch';
 import {
   csprojAddPackageReference,
   csprojUpdateVersion,
@@ -49,7 +52,49 @@ export function registerCommands(
     vscode.commands.registerCommand(
       'dependencyExplorer.fixProjectVulnerabilities',
       (node?: ProjectNode) => fixAllVulnerabilities(tree, node?.project)
+    ),
+    // Title-bar / palette entry: bumps every package (not just vulnerable ones) to its latest
+    // published version. Ignores any argument so it always offers the scope picker.
+    vscode.commands.registerCommand('dependencyExplorer.updateAllToLatest', () =>
+      updateAllToLatest(tree)
+    ),
+    // Project node entry: update every package in just that project to its latest version.
+    vscode.commands.registerCommand(
+      'dependencyExplorer.updateProjectToLatest',
+      (node?: ProjectNode) => updateAllToLatest(tree, node?.project)
+    ),
+    // Dependency node context menu: add the package to the "always update to latest" list.
+    vscode.commands.registerCommand(
+      'dependencyExplorer.addToAlwaysLatest',
+      (node: DependencyNode) => addToAlwaysLatest(node.name)
     )
+  );
+}
+
+/** Packages the user has flagged to always jump to the latest version on any upgrade (settings). */
+function alwaysLatestPatterns(): string[] {
+  return vscode.workspace
+    .getConfiguration('dependencyExplorer')
+    .get<string[]>('alwaysLatestPackages', []);
+}
+
+/** Add a package name to the `alwaysLatestPackages` setting (workspace scope when one is open). */
+async function addToAlwaysLatest(name: string): Promise<void> {
+  const config = vscode.workspace.getConfiguration('dependencyExplorer');
+  const current = config.get<string[]>('alwaysLatestPackages', []);
+  if (matchesAnyPattern(name, current)) {
+    vscode.window.showInformationMessage(
+      `${name} is already set to always update to the latest version.`
+    );
+    return;
+  }
+  const next = [...current, name].sort((a, b) => a.localeCompare(b));
+  const target = vscode.workspace.workspaceFolders?.length
+    ? vscode.ConfigurationTarget.Workspace
+    : vscode.ConfigurationTarget.Global;
+  await config.update('alwaysLatestPackages', next, target);
+  vscode.window.showInformationMessage(
+    `${name} will now always be bumped to its latest version on upgrade.`
   );
 }
 
@@ -181,7 +226,7 @@ async function fixAllVulnerabilities(
     return;
   }
 
-  const scope = project ? [project] : await chooseFixScope(allProjects);
+  const scope = project ? [project] : await chooseProjectScope(allProjects, 'Fix all vulnerabilities');
   if (!scope || scope.length === 0) {
     return;
   }
@@ -192,7 +237,7 @@ async function fixAllVulnerabilities(
   );
   if (plan.length === 0) {
     vscode.window.showInformationMessage(
-      `Dependency Explorer: no known vulnerabilities in ${scope.length === 1 ? scope[0].name : `the ${scope.length} selected projects`}.`
+      `Dependency Explorer: no known vulnerabilities in ${scopeLabel(scope)}.`
     );
     return;
   }
@@ -208,11 +253,78 @@ async function fixAllVulnerabilities(
     return;
   }
 
-  const chosen = await confirmFixSelection(fixable, unfixable);
+  const skippedSuffix =
+    unfixable.length > 0
+      ? ` — ${unfixable.length} package(s) with no safe version will be skipped`
+      : '';
+  const chosen = await confirmSelection(
+    fixable,
+    `Apply ${fixable.length} vulnerability fix${fixable.length === 1 ? '' : 'es'}${skippedSuffix}`
+  );
   if (!chosen || chosen.length === 0) {
     return;
   }
 
+  await applyPlan(chosen, (count) => `Applied ${count} vulnerability fix${count === 1 ? '' : 'es'}.`);
+}
+
+/**
+ * Bulk-update every package (not just vulnerable ones) in a chosen scope to its latest published
+ * version — direct deps updated in place, transitive deps pinned. Packages already at the latest
+ * version are skipped.
+ */
+async function updateAllToLatest(tree: DependencyTreeProvider, project?: Project): Promise<void> {
+  await tree.ensureScanned();
+  const allProjects = tree.getProjects();
+  if (allProjects.length === 0) {
+    vscode.window.showInformationMessage('Dependency Explorer: no projects to scan.');
+    return;
+  }
+
+  const scope = project
+    ? [project]
+    : await chooseProjectScope(allProjects, 'Update all packages to latest');
+  if (!scope || scope.length === 0) {
+    return;
+  }
+
+  const plan = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Finding latest versions…' },
+    () => buildUpdatePlan(tree, scope)
+  );
+  if (plan.length === 0) {
+    vscode.window.showInformationMessage(
+      `Dependency Explorer: every package in ${scopeLabel(scope)} is already at its latest version.`
+    );
+    return;
+  }
+
+  const alwaysLatest = alwaysLatestPatterns();
+  const isFlagged = (item: FixPlanItem) => matchesAnyPattern(item.name, alwaysLatest);
+  const chosen = await confirmSelection(
+    plan,
+    `Update ${plan.length} package${plan.length === 1 ? '' : 's'} to latest`,
+    // Directs and always-latest packages start checked; other transitive pins are opt-in.
+    (item) => item.isDirect || isFlagged(item),
+    (item) => (isFlagged(item) ? '★ always-latest' : undefined)
+  );
+  if (!chosen || chosen.length === 0) {
+    return;
+  }
+
+  await applyPlan(chosen, (count) => `Updated ${count} package${count === 1 ? '' : 's'} to latest.`);
+}
+
+/** Human-readable label for a chosen scope (single project name, or "the N selected projects"). */
+function scopeLabel(scope: Project[]): string {
+  return scope.length === 1 ? scope[0].name : `the ${scope.length} selected projects`;
+}
+
+/** Apply each planned change (direct → update, transitive → pin), then offer to install. */
+async function applyPlan(
+  chosen: FixPlanItem[],
+  successMessage: (count: number) => string
+): Promise<void> {
   const appliedProjects: Project[] = [];
   const appliedSet = new Set<string>();
   const failures: string[] = [];
@@ -233,17 +345,20 @@ async function fixAllVulnerabilities(
   }
 
   if (failures.length > 0) {
-    vscode.window.showWarningMessage(`Some fixes could not be applied: ${failures.join('; ')}`);
+    vscode.window.showWarningMessage(`Some changes could not be applied: ${failures.join('; ')}`);
   }
   if (appliedProjects.length === 0) {
     return;
   }
   const count = chosen.length - failures.length;
-  await offerInstall(appliedProjects, `Applied ${count} vulnerability fix${count === 1 ? '' : 'es'}.`);
+  await offerInstall(appliedProjects, successMessage(count));
 }
 
 /** All / choose-specific scope selection over projects (single is handled by the node entry point). */
-async function chooseFixScope(projects: Project[]): Promise<Project[] | undefined> {
+async function chooseProjectScope(
+  projects: Project[],
+  title: string
+): Promise<Project[] | undefined> {
   if (projects.length === 1) {
     return projects;
   }
@@ -252,7 +367,7 @@ async function chooseFixScope(projects: Project[]): Promise<Project[] | undefine
       { label: `$(check-all) All ${projects.length} projects`, scope: 'all' as const },
       { label: '$(list-selection) Choose projects…', scope: 'choose' as const },
     ],
-    { title: 'Fix all vulnerabilities', placeHolder: 'Which projects should be fixed?' }
+    { title, placeHolder: 'Which projects should be updated?' }
   );
   if (!pick) {
     return undefined;
@@ -269,8 +384,8 @@ async function chooseFixScope(projects: Project[]): Promise<Project[] | undefine
       project: p,
     })),
     {
-      title: 'Fix all vulnerabilities — choose projects',
-      placeHolder: 'Toggle the projects to fix, then press OK',
+      title: `${title} — choose projects`,
+      placeHolder: 'Toggle the projects, then press OK',
       canPickMany: true,
       matchOnDescription: true,
     }
@@ -278,17 +393,25 @@ async function chooseFixScope(projects: Project[]): Promise<Project[] | undefine
   return picked && picked.length > 0 ? picked.map((p) => p.project) : undefined;
 }
 
-/** Build the fix plan: resolve each vulnerable package's nearest safe version (batched OSV query). */
+/**
+ * Build the fix plan: resolve each vulnerable package's nearest safe version (batched OSV query).
+ * Packages the user has flagged as "always latest" jump straight to the latest published version
+ * instead, as long as that version is itself safe (otherwise they fall back to nearest-safe).
+ */
 async function buildFixPlan(
   tree: DependencyTreeProvider,
   scope: Project[]
 ): Promise<FixPlanItem[]> {
-  const pending: (FixPlanItem & { versions: string[] })[] = [];
+  const alwaysLatest = alwaysLatestPatterns();
+  const pending: (FixPlanItem & { versions: string[]; latest?: string; wantLatest: boolean })[] = [];
   for (const project of scope) {
     for (const vuln of tree.getVulnerablePackages(project)) {
       let versions: string[] = [];
+      let latest: string | undefined;
       try {
-        versions = (await fetchVersions(project.ecosystem, vuln.name, dirOf(project))).versions;
+        const result = await fetchVersions(project.ecosystem, vuln.name, dirOf(project));
+        versions = result.versions;
+        latest = result.latest;
       } catch {
         versions = [];
       }
@@ -299,50 +422,105 @@ async function buildFixPlan(
         isDirect: vuln.isDirect,
         currentVersion: vuln.version,
         versions,
+        latest,
+        wantLatest: matchesAnyPattern(vuln.name, alwaysLatest),
       });
     }
   }
 
-  // Batch OSV safety queries for every candidate version across the whole plan.
-  const queries = pending.flatMap((p) =>
-    candidateVersions(p.versions, p.currentVersion).map((version) => ({
-      ecosystem: p.ecosystem,
-      name: p.name,
-      version,
-    }))
-  );
+  // Batch OSV safety queries for every candidate version across the whole plan, plus the latest
+  // version of any always-latest package (so we can confirm it's safe before targeting it).
+  const queries = pending.flatMap((p) => {
+    const candidates = candidateVersions(p.versions, p.currentVersion);
+    if (p.wantLatest && p.latest && !candidates.includes(p.latest)) {
+      candidates.push(p.latest);
+    }
+    return candidates.map((version) => ({ ecosystem: p.ecosystem, name: p.name, version }));
+  });
   await tree.loadSafety(queries);
 
-  return pending.map(({ versions, ...item }) => ({
-    ...item,
-    targetVersion: nearestSafeVersion(
-      candidateVersions(versions, item.currentVersion),
-      item.currentVersion,
-      (version) => tree.isSafeVersion(item.ecosystem, item.name, version),
-      compareVersionsDesc,
-      isPrerelease
-    ),
-  }));
+  return pending.map(({ versions, latest, wantLatest, ...item }) => {
+    // Always-latest packages go to the latest version when it's newer and known-safe.
+    if (
+      wantLatest &&
+      latest &&
+      compareVersionsDesc(latest, item.currentVersion) < 0 &&
+      tree.isSafeVersion(item.ecosystem, item.name, latest)
+    ) {
+      return { ...item, targetVersion: latest };
+    }
+    return {
+      ...item,
+      targetVersion: nearestSafeVersion(
+        candidateVersions(versions, item.currentVersion),
+        item.currentVersion,
+        (version) => tree.isSafeVersion(item.ecosystem, item.name, version),
+        compareVersionsDesc,
+        isPrerelease
+      ),
+    };
+  });
 }
 
-/** Summary checklist of planned fixes (all pre-checked); returns the items the user kept. */
-async function confirmFixSelection(
-  fixable: FixPlanItem[],
-  unfixable: FixPlanItem[]
+/**
+ * Build the update plan: for every distinct package in scope, target its latest published version.
+ * Packages already at (or ahead of) the latest version are dropped, so the plan only holds real
+ * updates. No OSV query needed — this is a straight bump, not a vulnerability fix.
+ */
+async function buildUpdatePlan(
+  tree: DependencyTreeProvider,
+  scope: Project[]
+): Promise<FixPlanItem[]> {
+  const items: FixPlanItem[] = [];
+  for (const project of scope) {
+    for (const pkg of tree.getAllDistinctPackages(project)) {
+      let latest: string | undefined;
+      try {
+        latest = (await fetchVersions(project.ecosystem, pkg.name, dirOf(project))).latest;
+      } catch {
+        latest = undefined;
+      }
+      // Only include a package when the registry offers a strictly newer version to move to.
+      if (!latest || compareVersionsDesc(latest, pkg.version) >= 0) {
+        continue;
+      }
+      items.push({
+        project,
+        ecosystem: project.ecosystem,
+        name: pkg.name,
+        isDirect: pkg.isDirect,
+        currentVersion: pkg.version,
+        targetVersion: latest,
+      });
+    }
+  }
+  return items;
+}
+
+/**
+ * Summary checklist of planned changes; returns the items the user kept. `isPicked` decides which
+ * rows start checked (defaults to all) — the update-to-latest flow uses it to leave ordinary
+ * transitive pins unchecked, since pinning every transitive to latest is far more invasive than
+ * bumping directs. `tag` optionally appends a marker to a row's description (e.g. "always-latest").
+ */
+async function confirmSelection(
+  items: FixPlanItem[],
+  title: string,
+  isPicked: (item: FixPlanItem) => boolean = () => true,
+  tag: (item: FixPlanItem) => string | undefined = () => undefined
 ): Promise<FixPlanItem[] | undefined> {
-  const items = fixable.map((item) => ({
-    label: `${item.name}  ${item.currentVersion} → ${item.targetVersion}`,
-    description: `${item.project.name} · ${item.isDirect ? 'update' : 'pin'}`,
-    picked: true,
-    item,
-  }));
-  const skipped =
-    unfixable.length > 0
-      ? ` — ${unfixable.length} package(s) with no safe version will be skipped`
-      : '';
-  const picked = await vscode.window.showQuickPick(items, {
-    title: `Apply ${fixable.length} vulnerability fix${fixable.length === 1 ? '' : 'es'}${skipped}`,
-    placeHolder: 'Toggle the fixes to apply, then press OK',
+  const picks = items.map((item) => {
+    const extra = tag(item);
+    return {
+      label: `${item.name}  ${item.currentVersion} → ${item.targetVersion}`,
+      description: `${item.project.name} · ${item.isDirect ? 'update' : 'pin'}${extra ? ` · ${extra}` : ''}`,
+      picked: isPicked(item),
+      item,
+    };
+  });
+  const picked = await vscode.window.showQuickPick(picks, {
+    title,
+    placeHolder: 'Toggle the changes to apply, then press OK',
     canPickMany: true,
     matchOnDescription: true,
   });
@@ -718,11 +896,76 @@ async function offerInstall(projects: Project[], message: string): Promise<void>
   }
   for (const [cmd, dirs] of byCommand) {
     for (const dir of dirs) {
-      const terminal = vscode.window.createTerminal({ name: `${cmd} · ${path.basename(dir)}`, cwd: dir });
-      terminal.show();
-      terminal.sendText(cmd);
+      await runInstall(cmd, dir);
     }
   }
+}
+
+let installOutput: vscode.OutputChannel | undefined;
+function getInstallOutput(): vscode.OutputChannel {
+  if (!installOutput) {
+    installOutput = vscode.window.createOutputChannel('Dependency Explorer');
+  }
+  return installOutput;
+}
+
+/**
+ * Run an install command in `dir`, streaming its output to the extension's output channel. On a
+ * peer-dependency conflict (`ERESOLVE`) offer a one-click retry with the ecosystem's accept-anyway
+ * flag, so a vuln bump that strands the peer graph doesn't dead-end the user at a raw npm error.
+ */
+async function runInstall(command: string, dir: string): Promise<void> {
+  const { code, output } = await execInDir(command, dir);
+  if (code === 0) {
+    return;
+  }
+
+  const retryFlag = peerDepsRetryFlag(command);
+  if (retryFlag && isPeerConflict(output)) {
+    const retry = await vscode.window.showWarningMessage(
+      `"${command}" in ${path.basename(dir)} failed on a peer-dependency conflict. Retrying with ${retryFlag} accepts a resolution npm considers incorrect (and possibly broken) — you may instead need to bump the conflicting package too.`,
+      { modal: false },
+      `Retry with ${retryFlag}`,
+      'Show output'
+    );
+    if (retry === `Retry with ${retryFlag}`) {
+      await runInstall(`${command} ${retryFlag}`, dir);
+    } else if (retry === 'Show output') {
+      getInstallOutput().show();
+    }
+    return;
+  }
+
+  const show = await vscode.window.showWarningMessage(
+    `"${command}" in ${path.basename(dir)} failed (exit ${code}).`,
+    'Show output'
+  );
+  if (show) {
+    getInstallOutput().show();
+  }
+}
+
+/** Spawn `command` in `dir`, mirroring its output to the output channel; resolves with exit code. */
+function execInDir(command: string, dir: string): Promise<{ code: number; output: string }> {
+  const channel = getInstallOutput();
+  channel.show(true);
+  channel.appendLine(`\n> ${command}  (${dir})`);
+  return new Promise((resolve) => {
+    const child = spawn(command, { cwd: dir, shell: true });
+    let output = '';
+    const capture = (buf: Buffer) => {
+      const text = buf.toString();
+      output += text;
+      channel.append(text);
+    };
+    child.stdout.on('data', capture);
+    child.stderr.on('data', capture);
+    child.on('error', (err) => {
+      channel.appendLine(`\n[failed to start: ${err.message}]`);
+      resolve({ code: -1, output: output + err.message });
+    });
+    child.on('close', (code) => resolve({ code: code ?? 0, output }));
+  });
 }
 
 /** Directory that holds a project's manifest — the base for resolving its `.npmrc` / `NuGet.config`. */
