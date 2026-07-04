@@ -16,7 +16,7 @@ type PackagesMap = Record<string, LockPackage>;
  * Build a ResolvedGraph from a parsed `package-lock.json` v2/v3 `packages` map. Key "" is the
  * root project; other keys look like `node_modules/x` or `node_modules/a/node_modules/x`.
  * Resolution is node_modules walk-up (a dependency is found in the requester's own node_modules,
- * else by walking up parent scopes) — this must stay correct (see ARCHITECTURE.md / CLAUDE.md).
+ * else by walking up parent scopes) — this must stay correct; do not replace with naive name lookup.
  */
 export function buildNpmGraph(
   packages: PackagesMap,

@@ -170,8 +170,6 @@ then install it via *Extensions: Install from VSIX…*.
 - [`src/ui/previewPanel.ts`](src/ui/previewPanel.ts) — webview showing the transitive-dependency impact, with Apply / Cancel
 - [`src/commands.ts`](src/commands.ts) — update/override/bulk-fix commands, preview + confirm, cross-project scope picker, install prompt
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full module map and design invariants.
-
 </details>
 
 ## License
