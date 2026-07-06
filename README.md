@@ -52,14 +52,31 @@ at once.
   skipped. Direct dependencies start checked in the confirmation list, while transitive pins are
   opt-in (unchecked) — so a routine "update to latest" bumps your directs without pinning the whole
   transitive tree unless you ask it to.
-- ⭐ **Always-latest list** — flag packages you always want on the newest version (right-click a
-  dependency → *Always Update to Latest Version*, or the `dependencyExplorer.alwaysLatestPackages`
-  setting, which supports `*` wildcards like `@myorg/*`). Those packages jump straight to latest on
-  any upgrade — including when fixing vulnerabilities — instead of stopping at the nearest safe
-  version.
+- ⭐ **Prefer-latest list** — flag packages that should favour the newest version during the two
+  bulk operations (right-click a dependency → *Prefer Latest Version*; the menu toggles to *Remove
+  from Prefer-Latest List* once it's flagged — or edit the
+  `dependencyExplorer.alwaysLatestPackages` setting, which supports `*` wildcards like `@myorg/*`).
+  In **Fix All Vulnerabilities** a flagged package targets its *latest* version instead of the
+  smallest safe bump — but only when that latest version is itself non-vulnerable; otherwise it
+  quietly falls back to the nearest safe version, so it never lands on a known-vulnerable one. In
+  **Update All Packages to Latest** (where everything already targets latest) it simply starts
+  *pre-checked* and tagged `★ prefer-latest` — handy for transitive pins, which are otherwise
+  opt-in. It has no effect when you update a single package by hand.
+- 🚫 **Never-update list** — the opposite of prefer-latest: flag packages to **hold back from both
+  bulk operations** (right-click a dependency → *Never Update This Package*; the menu toggles to
+  *Remove from Never-Update List* once it's flagged — or edit the
+  `dependencyExplorer.neverUpdatePackages` setting, `*` wildcards supported). Held-back packages are
+  skipped by **Fix All Vulnerabilities** *and* **Update All Packages to Latest** — even a vulnerable
+  one stays put — and are listed afterwards so you know what was left untouched. Updating one by hand
+  still works; you'll just get an *update anyway?* confirmation first. If a package is on both lists,
+  never-update wins during bulk runs.
 - ↑ **Update** a direct dependency or 📌 **override/pin** a transitive one, with the manifest edited
   in place — npm range style preserved, pnpm `overrides`, NuGet `<PackageReference>`/Central
   Package Management all handled automatically.
+- 🎯 **Pin or use a range.** After you pick a version, choose how it's written: an exact pin, or a
+  range — npm `^` / `~` / `>=`, or NuGet floating (`1.2.*`) and bracket (`[1.2.3]`, `[1.2.3,)`)
+  syntax — with a custom-range escape hatch. The dependency preview is computed from the concrete
+  version you picked.
 - 👀 **Preview before you apply.** Every version change opens a diff of what that version's *own*
   dependencies look like versus your current one — added, removed, changed — pulled live from the
   registry, before anything touches disk.
@@ -70,6 +87,10 @@ at once.
   behind a corporate proxy as it does on the public registries.
 - ⚡ After any edit, the extension offers to run the right install command (`npm install`,
   `pnpm install`, `dotnet restore`) for you, and the tree refreshes itself once it's done.
+- ♻️ **Re-install on demand** — right-click a project → *Re-install Dependencies* to run its install
+  command, or use the title-bar ♻️ button to re-install every open project at once (npm, pnpm and
+  NuGet together, each command run once). Handy for restoring a freshly-cloned NuGet project that
+  has no `project.assets.json` yet.
 
 ## Getting started
 
@@ -166,7 +187,7 @@ then install it via *Extensions: Install from VSIX…*.
 - [`src/services/manifestEditor.ts`](src/services/manifestEditor.ts) — pure text edits for `package.json`, `.csproj`, `Directory.Packages.props`
 - [`src/services/previewService.ts`](src/services/previewService.ts) — fetches a version's declared dependencies and diffs current vs target
 - [`src/services/fixPlanner.ts`](src/services/fixPlanner.ts) — nearest-safe-version resolution for bulk fixes
-- [`src/services/packageMatch.ts`](src/services/packageMatch.ts) — case-insensitive, wildcard package-name matching for the always-latest list
+- [`src/services/packageMatch.ts`](src/services/packageMatch.ts) — case-insensitive, wildcard package-name matching for the prefer-latest list
 - [`src/ui/previewPanel.ts`](src/ui/previewPanel.ts) — webview showing the transitive-dependency impact, with Apply / Cancel
 - [`src/commands.ts`](src/commands.ts) — update/override/bulk-fix commands, preview + confirm, cross-project scope picker, install prompt
 

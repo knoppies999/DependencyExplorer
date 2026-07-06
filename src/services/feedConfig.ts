@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { execFileSync } from 'child_process';
 
 /**
  * Resolves the package feeds a project actually uses — from its own `.npmrc` (npm/pnpm) and
@@ -28,9 +29,20 @@ export interface NugetSource {
   headers: Record<string, string>;
 }
 
-export interface NugetFlatContainer {
+/**
+ * The endpoints discovered for a NuGet source. A feed may expose any combination of these:
+ *  - `flatContainer` (PackageBaseAddress/3.0.0) — the fast path for version lists and nuspecs.
+ *  - `registrationsBase` (RegistrationsBaseUrl) — fallback for feeds without a flat container,
+ *    notably GitHub Packages.
+ *  - `v2Base` — a legacy V2 (OData) feed, used when the source isn't a V3 `index.json`.
+ */
+export interface NugetServiceEndpoints {
   /** PackageBaseAddress base URL (ends with a slash); build `<id>/index.json` etc. under it. */
-  base: string;
+  flatContainer?: string;
+  /** RegistrationsBaseUrl base URL (ends with a slash); build `<id>/index.json` under it. */
+  registrationsBase?: string;
+  /** Legacy V2 (OData) service base URL (ends with a slash). */
+  v2Base?: string;
   headers: Record<string, string>;
 }
 
@@ -208,14 +220,18 @@ interface NugetConfig {
   /** source key -> URL. Insertion order preserved. */
   sources: Map<string, string>;
   disabled: Set<string>; // lowercased keys
-  /** source key -> Basic auth header value (already env-expanded). */
+  /** source key -> ready-to-use `Authorization` header value (already env-expanded). */
   credentials: Map<string, string>;
+  /** source key -> DPAPI-encrypted `<Password>` creds that still need OS-level decryption. */
+  encrypted: Map<string, { username?: string; password: string }>;
   /** source key -> glob patterns (from packageSourceMapping); empty map = no mapping. */
   mapping: Map<string, string[]>;
 }
 
 const nugetConfigCache = new Map<string, NugetConfig>();
-const serviceIndexCache = new Map<string, Promise<NugetFlatContainer | undefined>>();
+const serviceIndexCache = new Map<string, Promise<NugetServiceEndpoints | undefined>>();
+const dpapiCache = new Map<string, string | undefined>();
+let vssCredsCache: Map<string, { username?: string; password: string }> | undefined;
 let warnedEncryptedPassword = false;
 
 /** `NuGet.config` files from lowest to highest precedence: user-level, then root→…→projectDir. */
@@ -265,6 +281,7 @@ function loadNugetConfig(projectDir: string): NugetConfig {
     sources: new Map(),
     disabled: new Set(),
     credentials: new Map(),
+    encrypted: new Map(),
     mapping: new Map(),
   };
   let sawAnyConfig = false;
@@ -341,20 +358,119 @@ function parseCredentials(block: string, cfg: NugetConfig): void {
     const entries = new Map(readAddEntries(m[2]).map((e) => [e.key.toLowerCase(), e.value]));
     const username = entries.get('username');
     const clear = entries.get('cleartextpassword');
-    if (username && clear) {
-      const basic = Buffer.from(`${username}:${expandNugetEnv(clear)}`).toString('base64');
+    const encrypted = entries.get('password');
+    if (clear) {
+      // Feeds like Azure DevOps accept any username with a PAT as the password; others (token
+      // feeds) leave the username empty. Send whatever the config provides.
+      const basic = Buffer.from(`${username ?? ''}:${expandNugetEnv(clear)}`).toString('base64');
       cfg.credentials.set(key, `Basic ${basic}`);
-    } else if (entries.has('password')) {
-      // DPAPI-encrypted password — not decryptable cross-platform without native code.
-      if (!warnedEncryptedPassword) {
-        warnedEncryptedPassword = true;
-        console.warn(
-          `Dependency Explorer: NuGet source "${key}" uses an encrypted <Password>; ` +
-            'querying it anonymously. Use <ClearTextPassword> with an env-var token for auth.'
-        );
-      }
+    } else if (encrypted) {
+      // DPAPI-encrypted <Password> — decrypted lazily on Windows in resolveNugetSources.
+      cfg.encrypted.set(key, { username, password: encrypted });
     }
   }
+}
+
+/* -------------------------- NuGet credential sources ---------------------- */
+
+/**
+ * Decrypt a NuGet DPAPI-encrypted `<Password>` and turn it into a Basic auth header. NuGet
+ * encrypts with `ProtectedData.Protect(bytes, utf8("NuGet"), CurrentUser)`, so we can only decrypt
+ * on the same Windows user via PowerShell. Returns undefined off-Windows or on failure.
+ */
+function decryptNugetCredential(enc?: { username?: string; password: string }): string | undefined {
+  if (!enc) {
+    return undefined;
+  }
+  const password = decryptDpapi(enc.password);
+  if (password === undefined) {
+    return undefined;
+  }
+  const basic = Buffer.from(`${enc.username ?? ''}:${password}`).toString('base64');
+  return `Basic ${basic}`;
+}
+
+function decryptDpapi(encrypted: string): string | undefined {
+  if (dpapiCache.has(encrypted)) {
+    return dpapiCache.get(encrypted);
+  }
+  let result: string | undefined;
+  if (process.platform !== 'win32') {
+    warnEncrypted('encrypted NuGet <Password> values can only be decrypted on Windows');
+  } else {
+    try {
+      const script =
+        'Add-Type -AssemblyName System.Security;' +
+        '$e=[Convert]::FromBase64String($env:DE_NUGET_ENC);' +
+        "$p=[Text.Encoding]::UTF8.GetBytes('NuGet');" +
+        "$d=[Security.Cryptography.ProtectedData]::Unprotect($e,$p,'CurrentUser');" +
+        '[Console]::Out.Write([Text.Encoding]::UTF8.GetString($d))';
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        env: { ...process.env, DE_NUGET_ENC: encrypted },
+        encoding: 'utf8',
+        timeout: 10000,
+        windowsHide: true,
+      });
+      result = out.length > 0 ? out : undefined;
+    } catch {
+      warnEncrypted('failed to decrypt an encrypted NuGet <Password> via DPAPI');
+    }
+  }
+  dpapiCache.set(encrypted, result);
+  return result;
+}
+
+/**
+ * Credentials injected by the Azure Artifacts Credential Provider (and compatible CI setups) via
+ * the `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS` env var. Keyed by normalized endpoint (service index) URL.
+ */
+function vssEndpointCredentials(): Map<string, { username?: string; password: string }> {
+  if (vssCredsCache) {
+    return vssCredsCache;
+  }
+  const map = new Map<string, { username?: string; password: string }>();
+  const raw = process.env.VSS_NUGET_EXTERNAL_FEED_ENDPOINTS;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as {
+        endpointCredentials?: { endpoint?: string; username?: string; password?: string }[];
+      };
+      for (const c of parsed.endpointCredentials ?? []) {
+        if (c.endpoint && c.password) {
+          map.set(normalizeEndpoint(c.endpoint), { username: c.username, password: c.password });
+        }
+      }
+    } catch {
+      // Malformed env var — ignore.
+    }
+  }
+  vssCredsCache = map;
+  return map;
+}
+
+function envProviderCredential(indexUrl: string): string | undefined {
+  const cred = vssEndpointCredentials().get(normalizeEndpoint(indexUrl));
+  if (!cred) {
+    return undefined;
+  }
+  // Azure DevOps accepts any non-empty username paired with the PAT as the password.
+  const basic = Buffer.from(`${cred.username || 'AzureDevOps'}:${cred.password}`).toString('base64');
+  return `Basic ${basic}`;
+}
+
+function normalizeEndpoint(url: string): string {
+  return url.trim().replace(/\/+$/, '').toLowerCase();
+}
+
+function warnEncrypted(msg: string): void {
+  if (warnedEncryptedPassword) {
+    return;
+  }
+  warnedEncryptedPassword = true;
+  console.warn(
+    `Dependency Explorer: ${msg}; querying that source anonymously. Use <ClearTextPassword> with ` +
+      'an env-var token, or set VSS_NUGET_EXTERNAL_FEED_ENDPOINTS.'
+  );
 }
 
 /** NuGet.config XML-encodes non-identifier source keys (e.g. "My Feed" -> "My_x0020_Feed"). */
@@ -424,35 +540,73 @@ export function resolveNugetSources(name: string, projectDir: string): NugetSour
   const enabled = [...cfg.sources.keys()].filter((k) => !cfg.disabled.has(k.toLowerCase()));
   const selected = applyMapping(name, cfg, enabled);
   return selected.map((key) => {
-    const cred = cfg.credentials.get(key);
+    const indexUrl = cfg.sources.get(key)!;
+    // Auth precedence: explicit ClearTextPassword, then a decrypted <Password>, then the
+    // credential-provider env var. Any of these may be absent for a public/internal feed.
+    const cred =
+      cfg.credentials.get(key) ??
+      decryptNugetCredential(cfg.encrypted.get(key)) ??
+      envProviderCredential(indexUrl);
     const headers: Record<string, string> = cred ? { authorization: cred } : {};
-    return { key, indexUrl: cfg.sources.get(key)!, headers };
+    return { key, indexUrl, headers };
   });
 }
 
-/** Discover (and cache) a V3 source's PackageBaseAddress. Returns undefined for V2/unreachable feeds. */
-export function getNugetFlatContainer(source: NugetSource): Promise<NugetFlatContainer | undefined> {
+/** V3 registration resource types, most SemVer2-capable first. */
+const REG_TYPE_PREFERENCE = [
+  'RegistrationsBaseUrl/3.6.0',
+  'RegistrationsBaseUrl/Versioned',
+  'RegistrationsBaseUrl/3.4.0',
+  'RegistrationsBaseUrl/3.0.0-rc',
+  'RegistrationsBaseUrl/3.0.0-beta',
+  'RegistrationsBaseUrl',
+];
+
+/**
+ * Discover (and cache) the endpoints a source exposes. For a V3 service index we surface both the
+ * flat container and a registrations base (some feeds, e.g. GitHub Packages, offer only the
+ * latter). A non-`.json` source is treated as a legacy V2 (OData) feed. Returns undefined only
+ * when a V3 index is configured but unreachable.
+ */
+export function getNugetServiceEndpoints(
+  source: NugetSource,
+  signal?: AbortSignal
+): Promise<NugetServiceEndpoints | undefined> {
   const cached = serviceIndexCache.get(source.indexUrl);
   if (cached) {
     return cached;
   }
-  const promise = (async (): Promise<NugetFlatContainer | undefined> => {
+  const promise = (async (): Promise<NugetServiceEndpoints | undefined> => {
     if (!/\.json(\?|$)/i.test(source.indexUrl)) {
-      // Not a V3 service index (likely a legacy V2 feed) — unsupported.
-      return undefined;
+      // Not a V3 service index — treat it as a legacy V2 OData feed and query it directly.
+      return { v2Base: withTrailingSlash(source.indexUrl), headers: source.headers };
     }
     try {
-      const res = await fetch(source.indexUrl, { headers: source.headers });
+      const res = await fetch(source.indexUrl, { headers: source.headers, signal });
       if (!res.ok) {
+        // 4xx/5xx is a property of the feed — cache it so we don't re-hit a broken source.
         return undefined;
       }
       const data = (await res.json()) as { resources?: { '@id': string; '@type': string }[] };
-      const flat = data.resources?.find((r) => r['@type']?.startsWith('PackageBaseAddress/3.0.0'));
-      if (!flat?.['@id']) {
-        return undefined;
+      const resources = data.resources ?? [];
+      const flat = resources.find((r) => r['@type']?.startsWith('PackageBaseAddress/3.0.0'));
+      let registrationsBase: string | undefined;
+      for (const type of REG_TYPE_PREFERENCE) {
+        const hit = resources.find((r) => r['@type'] === type);
+        if (hit?.['@id']) {
+          registrationsBase = withTrailingSlash(hit['@id']);
+          break;
+        }
       }
-      return { base: withTrailingSlash(flat['@id']), headers: source.headers };
+      return {
+        flatContainer: flat?.['@id'] ? withTrailingSlash(flat['@id']) : undefined,
+        registrationsBase,
+        headers: source.headers,
+      };
     } catch {
+      // A timeout/abort or network blip is transient — drop it from the cache so a later package
+      // (with a fresh budget) can retry this source instead of inheriting the failure.
+      serviceIndexCache.delete(source.indexUrl);
       return undefined;
     }
   })();
@@ -469,5 +623,7 @@ export function _resetFeedCaches(): void {
   npmConfigCache.clear();
   nugetConfigCache.clear();
   serviceIndexCache.clear();
+  dpapiCache.clear();
+  vssCredsCache = undefined;
   warnedEncryptedPassword = false;
 }

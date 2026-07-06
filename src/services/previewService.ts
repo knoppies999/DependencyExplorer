@@ -1,7 +1,8 @@
 import { Ecosystem } from '../types';
 import {
-  getNugetFlatContainer,
+  getNugetServiceEndpoints,
   joinUrl,
+  NugetServiceEndpoints,
   resolveNpmFeed,
   resolveNugetSources,
 } from './feedConfig';
@@ -138,22 +139,34 @@ async function fetchNugetDeps(
   const sources = resolveNugetSources(name, projectDir);
   const errors: string[] = [];
   for (const source of sources) {
-    const flat = await getNugetFlatContainer(source);
-    if (!flat) {
+    const ep = await getNugetServiceEndpoints(source);
+    if (!ep) {
       continue;
     }
     try {
-      const res = await fetch(joinUrl(flat.base, `${id}/${ver}/${id}.nuspec`), {
-        headers: flat.headers,
-      });
-      if (res.status === 404) {
+      if (ep.flatContainer) {
+        const res = await fetch(joinUrl(ep.flatContainer, `${id}/${ver}/${id}.nuspec`), {
+          headers: ep.headers,
+        });
+        if (res.status === 404) {
+          continue;
+        }
+        if (!res.ok) {
+          errors.push(`${source.key}: ${res.status}`);
+          continue;
+        }
+        return parseNuspecDeps(await res.text(), targetFramework);
+      }
+      if (ep.registrationsBase) {
+        // Feeds without a flat container (e.g. GitHub Packages) expose dependency groups on the
+        // registration leaf instead of a downloadable nuspec.
+        const deps = await depsFromRegistrations(id, version, ep, targetFramework);
+        if (deps) {
+          return deps;
+        }
         continue;
       }
-      if (!res.ok) {
-        errors.push(`${source.key}: ${res.status}`);
-        continue;
-      }
-      return parseNuspecDeps(await res.text(), targetFramework);
+      // Legacy V2 feeds don't offer dependency metadata via a single call — skip for preview.
     } catch (err) {
       errors.push(`${source.key}: ${err instanceof Error ? err.message : err}`);
     }
@@ -161,6 +174,67 @@ async function fetchNugetDeps(
   throw new Error(
     `NuGet nuspec unavailable for ${name} ${version}${errors.length ? ` (${errors.join('; ')})` : ''}`
   );
+}
+
+interface RegistrationLeaf {
+  catalogEntry?: {
+    version?: string;
+    dependencyGroups?: { targetFramework?: string; dependencies?: { id?: string; range?: string }[] }[];
+  };
+}
+
+async function depsFromRegistrations(
+  id: string,
+  version: string,
+  ep: NugetServiceEndpoints,
+  targetFramework?: string
+): Promise<{ deps: DepRequirement[]; framework?: string } | undefined> {
+  const res = await fetch(joinUrl(ep.registrationsBase!, `${id}/index.json`), {
+    headers: { ...ep.headers, accept: 'application/json' },
+  });
+  if (!res.ok) {
+    return undefined;
+  }
+  const index = (await res.json()) as {
+    items?: { '@id'?: string; items?: RegistrationLeaf[] }[];
+  };
+  const want = version.toLowerCase();
+  for (const page of index.items ?? []) {
+    let leaves = page.items;
+    if (!leaves && page['@id']) {
+      const pageRes = await fetch(page['@id'], { headers: { ...ep.headers, accept: 'application/json' } });
+      if (!pageRes.ok) {
+        continue;
+      }
+      leaves = ((await pageRes.json()) as { items?: RegistrationLeaf[] }).items;
+    }
+    for (const leaf of leaves ?? []) {
+      const entry = leaf.catalogEntry;
+      if (entry?.version?.toLowerCase() === want) {
+        return selectRegistrationGroup(entry.dependencyGroups, targetFramework);
+      }
+    }
+  }
+  return undefined;
+}
+
+function selectRegistrationGroup(
+  groups: { targetFramework?: string; dependencies?: { id?: string; range?: string }[] }[] | undefined,
+  targetFramework?: string
+): { deps: DepRequirement[]; framework?: string } {
+  const mapped = (groups ?? []).map((g) => ({
+    fw: g.targetFramework,
+    deps: (g.dependencies ?? [])
+      .filter((d) => d.id)
+      .map((d) => ({ name: d.id!, range: d.range ?? '' })),
+  }));
+  if (mapped.length === 0) {
+    return { deps: [] };
+  }
+  const want = targetFramework ? normalizeTfm(targetFramework) : undefined;
+  const exact = want ? mapped.find((g) => g.fw && normalizeTfm(g.fw) === want) : undefined;
+  const chosen = exact ?? mapped.find((g) => !g.fw) ?? mapped[0];
+  return { deps: chosen.deps, framework: chosen.fw };
 }
 
 export function parseNuspecDeps(

@@ -10,6 +10,7 @@ import {
 } from '../types';
 import { OsvService, packagesToQueries } from '../services/osvService';
 import { compareVersionsDesc } from '../services/registryService';
+import { matchesAnyPattern } from '../services/packageMatch';
 
 export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   private _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined>();
@@ -26,6 +27,11 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
 
   refresh(): void {
     this.scanning = this.scan();
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  /** Re-render tree items without re-scanning — e.g. after a settings toggle changes a contextValue. */
+  rerender(): void {
     this._onDidChangeTreeData.fire(undefined);
   }
 
@@ -48,6 +54,14 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
   /** Projects the tree can act on (excludes those that failed to parse). */
   getProjects(): Project[] {
     return this.projects.filter((p) => !p.error);
+  }
+
+  /**
+   * Every scanned project, including ones that failed to parse — used by re-install, since an
+   * unrestored NuGet project (no project.assets.json) is exactly what a re-install should fix.
+   */
+  getAllProjects(): Project[] {
+    return this.projects;
   }
 
   /** Ensure a scan has run (manifests parsed) — used by flows that don't need OSV data. */
@@ -334,7 +348,18 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
       item.iconPath = new vscode.ThemeIcon('package');
     }
 
-    item.contextValue = node.isDirect ? 'dep:direct' : 'dep:transitive';
+    // contextValue drives the right-click menu. Append the list-membership flags so the menu can
+    // show a "Prefer Latest / Never Update" add option or its "Remove from …" counterpart. Matched
+    // by regex in package.json, so the base `dep:direct` / `dep:transitive` prefix is preserved.
+    const ctx = [node.isDirect ? 'dep:direct' : 'dep:transitive'];
+    const config = vscode.workspace.getConfiguration('dependencyExplorer');
+    if (matchesAnyPattern(node.name, config.get<string[]>('alwaysLatestPackages', []))) {
+      ctx.push('preferLatest');
+    }
+    if (matchesAnyPattern(node.name, config.get<string[]>('neverUpdatePackages', []))) {
+      ctx.push('neverUpdate');
+    }
+    item.contextValue = ctx.join('.');
     item.tooltip = this.dependencyTooltip(node);
     return item;
   }

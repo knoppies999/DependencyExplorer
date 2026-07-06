@@ -2,6 +2,54 @@
 
 All notable changes to the **Dependency Explorer** extension are documented here.
 
+## 1.3.0 — 2026-07-06
+
+### Added
+
+- **Version ranges** — after picking a version in the update / override flow, choose how it's
+  written to the manifest: an exact pin, or a range. npm/pnpm offer `^`, `~`, and `>=`; NuGet
+  offers floating (`1.2.*`, `1.*`) and exact/minimum bracket syntax (`[1.2.3]`, `[1.2.3,)`), plus a
+  custom-range option. Explicit ranges are written verbatim (no more double `^^`), while bulk
+  operations keep preserving your existing range style. The dependency preview is computed from the
+  concrete version you selected.
+- **Never-update list** — flag packages to hold back from both bulk operations, via a dependency's
+  right-click **Never Update This Package** or the `dependencyExplorer.neverUpdatePackages` setting
+  (supports `*` wildcards such as `@myorg/*`). Held-back packages are skipped by **Fix All
+  Vulnerabilities** *and* **Update All Packages to Latest** — including when vulnerable — and are
+  reported afterwards so you know what was left untouched. A manual single-package update still works
+  but prompts for confirmation first. When a package is on both this and the prefer-latest list,
+  never-update takes precedence during bulk runs.
+- **Toggle the prefer-latest / never-update lists from the tree** — the right-click actions flip to
+  **Remove from Prefer-Latest List** / **Remove from Never-Update List** once a package is on the
+  respective list, so you can clear a flag without editing settings. (A package flagged only via a
+  `*` wildcard isn't removed automatically — the wildcard is named so you can edit it yourself.)
+- **Re-install dependencies** — right-click a project for **Re-install Dependencies**, or use the
+  new title-bar button / **Re-install Dependencies in All Projects** command to re-install every
+  open project at once. Runs each distinct install command (`npm install` / `pnpm install` /
+  `dotnet restore`) once — deduping shared pnpm workspace roots — streaming to the output channel,
+  then refreshes the tree. Works on unrestored NuGet projects (no `project.assets.json` yet).
+- **Resilient bulk operations** — version resolution now has a 30-second per-package timeout, so a
+  slow or unreachable feed no longer stalls a bulk run. Packages that can't be resolved are skipped,
+  listed for you, and offered up for manual version entry instead of failing the whole operation.
+
+### Changed
+
+- **Renamed "Always Update to Latest Version" to "Prefer Latest Version"** (row tag `★ always-latest`
+  → `★ prefer-latest`) to better reflect what it does: during **Fix All Vulnerabilities** a flagged
+  package targets its latest version only when that version is itself non-vulnerable, otherwise it
+  falls back to the nearest safe one; during **Update All Packages to Latest** it just pre-checks the
+  row. It has no effect on single-package updates. The setting key (`alwaysLatestPackages`) is
+  unchanged, so existing configuration keeps working.
+
+### Fixed
+
+- **NuGet version resolution on custom / private feeds.** Version lists and preview diffs now work
+  on feeds that don't expose a flat container — GitHub Packages and similar are read via the
+  registrations endpoint, and legacy V2 (OData) feeds are supported too. Authentication covers more
+  setups: encrypted `<Password>` entries (decrypted via DPAPI on Windows), the
+  `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS` credential provider used by Azure Artifacts, and
+  `<ClearTextPassword>` without a username.
+
 ## 1.2.0
 
 ### Added
