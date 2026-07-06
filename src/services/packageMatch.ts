@@ -1,5 +1,5 @@
 /**
- * Pure package-name matching for the "always update to latest" list. Kept `vscode`-free so it can
+ * Pure package-name matching for the "prefer latest" list. Kept `vscode`-free so it can
  * be unit-tested. Matching is case-insensitive; a `*` in a pattern is a wildcard matching any
  * sequence of characters (e.g. `@myorg/*` matches every package in that scope). Blank patterns are
  * ignored.

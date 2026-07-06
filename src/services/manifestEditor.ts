@@ -4,8 +4,25 @@ const JSON_FORMAT = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
 
 /* ---------------------------------- npm ---------------------------------- */
 
-/** Bump a direct dependency in package.json, preserving the existing range style (^ / ~ / exact). */
-export function npmUpdateDependency(text: string, name: string, version: string): string {
+/**
+ * True when `version` is already a full range spec the caller wants written verbatim — i.e. it
+ * carries an explicit operator (`^`, `~`, `>=`, `<`, `=`) or a `*` wildcard, or the caller forced
+ * literal mode. A bare version like `1.2.3` is not literal, so the existing `^`/`~` style is kept.
+ */
+function isLiteralSpec(version: string, literal: boolean): boolean {
+  return literal || /^[\^~<>=]/.test(version) || version.includes('*');
+}
+
+/**
+ * Bump a direct dependency in package.json. A bare version preserves the existing range style
+ * (^ / ~ / exact); an explicit range (or `literal`) is written exactly as given.
+ */
+export function npmUpdateDependency(
+  text: string,
+  name: string,
+  version: string,
+  literal = false
+): string {
   const pkg = parseJsonc(text) ?? {};
   const section = ['dependencies', 'devDependencies', 'optionalDependencies'].find(
     (s) => pkg[s]?.[name] !== undefined
@@ -14,7 +31,7 @@ export function npmUpdateDependency(text: string, name: string, version: string)
     throw new Error(`${name} was not found in package.json dependencies`);
   }
   const current: string = pkg[section][name];
-  const prefix = /^[\^~]/.test(current) ? current[0] : '';
+  const prefix = isLiteralSpec(version, literal) ? '' : /^[\^~]/.test(current) ? current[0] : '';
   return applyEdits(text, modify(text, [section, name], prefix + version, JSON_FORMAT));
 }
 
@@ -28,12 +45,12 @@ const NPM_DIRECT_SECTIONS = ['dependencies', 'devDependencies', 'optionalDepende
  * dependency here, bump the direct range to the safe version and point the override at it with
  * `$name` (forcing every nested copy to the same resolution); otherwise write the literal version.
  */
-export function npmAddOverride(text: string, name: string, version: string): string {
+export function npmAddOverride(text: string, name: string, version: string, literal = false): string {
   const pkg = parseJsonc(text) ?? {};
   const directSection = NPM_DIRECT_SECTIONS.find((s) => pkg[s]?.[name] !== undefined);
   if (directSection) {
     const current: string = pkg[directSection][name];
-    const prefix = /^[\^~]/.test(current) ? current[0] : '';
+    const prefix = isLiteralSpec(version, literal) ? '' : /^[\^~]/.test(current) ? current[0] : '';
     const bumped = applyEdits(
       text,
       modify(text, [directSection, name], prefix + version, JSON_FORMAT)

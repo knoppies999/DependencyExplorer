@@ -2,7 +2,7 @@
   "name": "dependency-explorer",
   "displayName": "Dependency Explorer",
   "description": "Full dependency tree (including transitive dependencies) for npm, pnpm and NuGet projects, with vulnerability flags and one-click update, transitive override, or bulk fix.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "RuanduPlessis",
   "license": "MIT",
   "repository": {
@@ -44,7 +44,15 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Packages that should always be bumped to their **latest** published version during any upgrade — both **Fix All Vulnerabilities** and **Update All Packages to Latest**. Names are matched case-insensitively, and `*` is a wildcard (e.g. `@myorg/*` matches every package in that scope). Add a package quickly with **Always Update to Latest Version** in a dependency's right-click menu."
+          "markdownDescription": "Packages to **prefer the latest published version** for during the two bulk operations (this has no effect on updating a single package by hand):\n\n- **Fix All Vulnerabilities** — a listed package targets its **latest** version instead of the smallest safe bump, *as long as that latest version is itself non-vulnerable*. If it isn't, the package quietly falls back to the nearest safe version, so it never lands on a known-vulnerable version.\n- **Update All Packages to Latest** — every package already targets latest here, so a listed package is simply **pre-checked** in the confirmation list (and tagged `★ prefer-latest`). Handy for transitive pins, which are otherwise unchecked by default.\n\nNames are matched case-insensitively, and `*` is a wildcard (e.g. `@myorg/*` matches every package in that scope). Add a package quickly with **Prefer Latest Version** in a dependency's right-click menu — which flips to **Remove from Prefer-Latest List** once it's on the list."
+        },
+        "dependencyExplorer.neverUpdatePackages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Packages to **hold back from both bulk operations** — they are skipped entirely by **Fix All Vulnerabilities** *and* **Update All Packages to Latest**, and listed afterwards as held back so you know they were left untouched.\n\n⚠️ A held-back package is skipped even when it is vulnerable, so it will stay on a known-vulnerable version until you update it by hand.\n\nUpdating a single package by hand still works — you'll just get an *update anyway?* confirmation first. If a package is on **both** this list and the prefer-latest list, never-update wins during bulk operations.\n\nNames are matched case-insensitively, and `*` is a wildcard (e.g. `@myorg/*` matches every package in that scope). Add a package quickly with **Never Update This Package** in a dependency's right-click menu — which flips to **Remove from Never-Update List** once it's on the list."
         }
       }
     },
@@ -111,9 +119,27 @@
       },
       {
         "command": "dependencyExplorer.addToAlwaysLatest",
-        "title": "Always Update to Latest Version",
+        "title": "Prefer Latest Version",
         "category": "Dependency Explorer",
         "icon": "$(star)"
+      },
+      {
+        "command": "dependencyExplorer.addToNeverUpdate",
+        "title": "Never Update This Package",
+        "category": "Dependency Explorer",
+        "icon": "$(circle-slash)"
+      },
+      {
+        "command": "dependencyExplorer.removeFromAlwaysLatest",
+        "title": "Remove from Prefer-Latest List",
+        "category": "Dependency Explorer",
+        "icon": "$(star-full)"
+      },
+      {
+        "command": "dependencyExplorer.removeFromNeverUpdate",
+        "title": "Remove from Never-Update List",
+        "category": "Dependency Explorer",
+        "icon": "$(circle-slash)"
       },
       {
         "command": "dependencyExplorer.updateDependency",
@@ -132,6 +158,18 @@
         "title": "Open Manifest",
         "category": "Dependency Explorer",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "dependencyExplorer.reinstallProject",
+        "title": "Re-install Dependencies",
+        "category": "Dependency Explorer",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "dependencyExplorer.reinstallAll",
+        "title": "Re-install Dependencies in All Projects",
+        "category": "Dependency Explorer",
+        "icon": "$(cloud-download)"
       }
     ],
     "menus": {
@@ -159,6 +197,22 @@
         {
           "command": "dependencyExplorer.addToAlwaysLatest",
           "when": "false"
+        },
+        {
+          "command": "dependencyExplorer.addToNeverUpdate",
+          "when": "false"
+        },
+        {
+          "command": "dependencyExplorer.removeFromAlwaysLatest",
+          "when": "false"
+        },
+        {
+          "command": "dependencyExplorer.removeFromNeverUpdate",
+          "when": "false"
+        },
+        {
+          "command": "dependencyExplorer.reinstallProject",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -178,34 +232,54 @@
           "group": "navigation@3"
         },
         {
-          "command": "dependencyExplorer.refresh",
+          "command": "dependencyExplorer.reinstallAll",
           "when": "view == dependencyExplorer.tree",
           "group": "navigation@4"
+        },
+        {
+          "command": "dependencyExplorer.refresh",
+          "when": "view == dependencyExplorer.tree",
+          "group": "navigation@5"
         }
       ],
       "view/item/context": [
         {
           "command": "dependencyExplorer.updateDependency",
-          "when": "view == dependencyExplorer.tree && viewItem == dep:direct",
+          "when": "view == dependencyExplorer.tree && viewItem =~ /^dep:direct/",
           "group": "inline@1"
         },
         {
           "command": "dependencyExplorer.overrideDependency",
-          "when": "view == dependencyExplorer.tree && viewItem == dep:transitive",
+          "when": "view == dependencyExplorer.tree && viewItem =~ /^dep:transitive/",
           "group": "inline@1"
         },
         {
           "command": "dependencyExplorer.updateDependency",
-          "when": "view == dependencyExplorer.tree && viewItem == dep:direct"
+          "when": "view == dependencyExplorer.tree && viewItem =~ /^dep:direct/"
         },
         {
           "command": "dependencyExplorer.overrideDependency",
-          "when": "view == dependencyExplorer.tree && viewItem == dep:transitive"
+          "when": "view == dependencyExplorer.tree && viewItem =~ /^dep:transitive/"
         },
         {
           "command": "dependencyExplorer.addToAlwaysLatest",
-          "when": "view == dependencyExplorer.tree && (viewItem == dep:direct || viewItem == dep:transitive)",
+          "when": "view == dependencyExplorer.tree && viewItem =~ /^dep:(direct|transitive)/ && !(viewItem =~ /preferLatest/)",
           "group": "1_modify@2"
+        },
+        {
+          "command": "dependencyExplorer.removeFromAlwaysLatest",
+          "when": "view == dependencyExplorer.tree && viewItem =~ /preferLatest/",
+          "group": "1_modify@2"
+        },
+        {
+          "command": "dependencyExplorer.addToNeverUpdate",
+          "when": "view == dependencyExplorer.tree && viewItem =~ /^dep:(direct|transitive)/ && !(viewItem =~ /neverUpdate/)",
+          "group": "1_modify@3"
+        },
+        {
+          "command": "dependencyExplorer.removeFromNeverUpdate",
+          "when": "view == dependencyExplorer.tree && viewItem =~ /neverUpdate/",
+          "group": "1_modify@3"
         },
         {
           "command": "dependencyExplorer.fixProjectVulnerabilities",
@@ -218,6 +292,10 @@
         },
         {
           "command": "dependencyExplorer.updateProjectToLatest",
+          "when": "view == dependencyExplorer.tree && viewItem == project"
+        },
+        {
+          "command": "dependencyExplorer.reinstallProject",
           "when": "view == dependencyExplorer.tree && viewItem == project"
         },
         {
