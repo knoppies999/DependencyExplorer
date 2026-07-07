@@ -2,7 +2,7 @@
   "name": "dependency-explorer",
   "displayName": "Dependency Explorer",
   "description": "Full dependency tree (including transitive dependencies) for npm, pnpm and NuGet projects, with vulnerability flags and one-click update, transitive override, or bulk fix.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "publisher": "RuanduPlessis",
   "license": "MIT",
   "repository": {
@@ -118,6 +118,30 @@
         "icon": "$(arrow-circle-up)"
       },
       {
+        "command": "dependencyExplorer.bumpAspire",
+        "title": "Bump .NET & Aspire Versions…",
+        "category": "Dependency Explorer",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "dependencyExplorer.bumpProjectAspire",
+        "title": "Bump .NET & Aspire Versions…",
+        "category": "Dependency Explorer",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "dependencyExplorer.bumpDotnet",
+        "title": "Bump .NET Version…",
+        "category": "Dependency Explorer",
+        "icon": "$(versions)"
+      },
+      {
+        "command": "dependencyExplorer.bumpProjectDotnet",
+        "title": "Bump .NET Version…",
+        "category": "Dependency Explorer",
+        "icon": "$(versions)"
+      },
+      {
         "command": "dependencyExplorer.addToAlwaysLatest",
         "title": "Prefer Latest Version",
         "category": "Dependency Explorer",
@@ -213,6 +237,14 @@
         {
           "command": "dependencyExplorer.reinstallProject",
           "when": "false"
+        },
+        {
+          "command": "dependencyExplorer.bumpProjectAspire",
+          "when": "false"
+        },
+        {
+          "command": "dependencyExplorer.bumpProjectDotnet",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -227,19 +259,24 @@
           "group": "navigation@2"
         },
         {
-          "command": "dependencyExplorer.fixAcrossProjects",
+          "command": "dependencyExplorer.bumpAspire",
           "when": "view == dependencyExplorer.tree",
           "group": "navigation@3"
         },
         {
-          "command": "dependencyExplorer.reinstallAll",
+          "command": "dependencyExplorer.fixAcrossProjects",
           "when": "view == dependencyExplorer.tree",
           "group": "navigation@4"
         },
         {
-          "command": "dependencyExplorer.refresh",
+          "command": "dependencyExplorer.reinstallAll",
           "when": "view == dependencyExplorer.tree",
           "group": "navigation@5"
+        },
+        {
+          "command": "dependencyExplorer.refresh",
+          "when": "view == dependencyExplorer.tree",
+          "group": "navigation@6"
         }
       ],
       "view/item/context": [
@@ -283,24 +320,34 @@
         },
         {
           "command": "dependencyExplorer.fixProjectVulnerabilities",
-          "when": "view == dependencyExplorer.tree && viewItem == project",
+          "when": "view == dependencyExplorer.tree && viewItem =~ /^project/",
           "group": "inline@1"
         },
         {
           "command": "dependencyExplorer.fixProjectVulnerabilities",
-          "when": "view == dependencyExplorer.tree && viewItem == project"
+          "when": "view == dependencyExplorer.tree && viewItem =~ /^project/"
         },
         {
           "command": "dependencyExplorer.updateProjectToLatest",
-          "when": "view == dependencyExplorer.tree && viewItem == project"
+          "when": "view == dependencyExplorer.tree && viewItem =~ /^project/"
+        },
+        {
+          "command": "dependencyExplorer.bumpProjectAspire",
+          "when": "view == dependencyExplorer.tree && viewItem == project.nuget",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "dependencyExplorer.bumpProjectDotnet",
+          "when": "view == dependencyExplorer.tree && viewItem == project.nuget",
+          "group": "1_modify@2"
         },
         {
           "command": "dependencyExplorer.reinstallProject",
-          "when": "view == dependencyExplorer.tree && viewItem == project"
+          "when": "view == dependencyExplorer.tree && viewItem =~ /^project/"
         },
         {
           "command": "dependencyExplorer.openManifest",
-          "when": "view == dependencyExplorer.tree && viewItem == project"
+          "when": "view == dependencyExplorer.tree && viewItem =~ /^project/"
         }
       ]
     }

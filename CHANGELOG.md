@@ -2,6 +2,26 @@
 
 All notable changes to the **Dependency Explorer** extension are documented here.
 
+## 1.5.0 — 2026-07-07
+
+### Added
+
+- **Bump .NET & Aspire Versions…** — a new command (title-bar rocket icon, command palette, or a
+  project's right-click menu) for upgrading a .NET Aspire solution in one pass. Pick a single target
+  Aspire version and it's applied to the `Aspire.AppHost.Sdk` **and** every first-party `Aspire.*`
+  package across the chosen scope (all NuGet projects, a chosen subset, or one project) — these ship
+  in lockstep, so they move together. In the same flow you can *optionally* move the .NET
+  `<TargetFramework>` too (or leave it unchanged). Every change — each package, the SDK, and each
+  target-framework edit — is shown in a pre-checked confirmation list before anything is written, and
+  `dotnet restore` is offered afterwards. An Aspire package the feed doesn't publish at the chosen
+  version is left untouched and reported, so a non-existent version is never written. Central Package
+  Management is honored (versions in `Directory.Packages.props`), as is a `<TargetFramework>`
+  centralized in `Directory.Build.props`.
+- **Bump .NET Version…** — a standalone command that changes only the `<TargetFramework>` across a
+  chosen set of NuGet projects (whole solution or a subset), with no Aspire involvement — for plain
+  .NET solutions or when you just want to move the framework. Multi-target (`<TargetFrameworks>`)
+  projects are reported and left for you to edit by hand.
+
 ## 1.4.0 — 2026-07-07
 
 ### Added

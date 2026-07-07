@@ -9,6 +9,10 @@ import { FixPlanItem, nearestSafeVersion } from './services/fixPlanner';
 import { matchesAnyPattern } from './services/packageMatch';
 import {
   csprojAddPackageReference,
+  csprojReadAspireSdkVersion,
+  csprojReadTargetFrameworks,
+  csprojUpdateAspireSdkVersion,
+  csprojUpdateTargetFramework,
   csprojUpdateVersion,
   detectCpmMode,
   npmAddOverride,
@@ -17,6 +21,7 @@ import {
   propsSetPackageVersion,
   propsUpdateVersion,
 } from './services/manifestEditor';
+import { ASPIRE_SDK_NAME, ASPIRE_VERSION_REF, isAspirePackage, targetFrameworkOptions } from './services/aspire';
 import { DependencyTreeProvider } from './tree/dependencyTree';
 import { computeBumpPreview } from './services/previewService';
 import { confirmBump } from './ui/previewPanel';
@@ -62,6 +67,20 @@ export function registerCommands(
     vscode.commands.registerCommand(
       'dependencyExplorer.updateProjectToLatest',
       (node?: ProjectNode) => updateAllToLatest(tree, node?.project)
+    ),
+    // Title-bar / palette entry: bump the Aspire version (SDK + every Aspire.* package) and,
+    // optionally, the .NET target framework across a chosen scope. Ignores any node argument so it
+    // always offers the scope picker.
+    vscode.commands.registerCommand('dependencyExplorer.bumpAspire', () => bumpAspireVersions(tree)),
+    // Project node entry: same, scoped to the right-clicked project.
+    vscode.commands.registerCommand('dependencyExplorer.bumpProjectAspire', (node?: ProjectNode) =>
+      bumpAspireVersions(tree, node?.project)
+    ),
+    // Title-bar / palette entry: bump only the .NET <TargetFramework> across a chosen scope.
+    vscode.commands.registerCommand('dependencyExplorer.bumpDotnet', () => bumpDotnetVersion(tree)),
+    // Project node entry: same, scoped to the right-clicked project.
+    vscode.commands.registerCommand('dependencyExplorer.bumpProjectDotnet', (node?: ProjectNode) =>
+      bumpDotnetVersion(tree, node?.project)
     ),
     // Dependency node context menu: toggle the package on the "prefer latest" list.
     vscode.commands.registerCommand(
@@ -507,6 +526,518 @@ async function updateAllToLatest(tree: DependencyTreeProvider, project?: Project
   }
 
   await applyPlan(chosen, (count) => `Updated ${count} package${count === 1 ? '' : 's'} to latest.`);
+}
+
+/* ------------------------- .NET / Aspire version bump -------------------- */
+
+/** Every distinct resolved target framework across a scope (for the .NET version picker default). */
+function distinctCurrentTfms(tree: DependencyTreeProvider, scope: Project[]): string[] {
+  const set = new Set<string>();
+  for (const project of scope) {
+    const tfm = tree.getTargetFramework(project);
+    if (tfm) {
+      set.add(tfm);
+    }
+  }
+  return [...set];
+}
+
+/**
+ * Ask the user which .NET target framework to move to. `allowUnchanged` adds a "leave unchanged" row
+ * (used by the Aspire command, where the TFM bump is optional). Returns the chosen framework moniker,
+ * the sentinel `'unchanged'`, or undefined when the picker is dismissed.
+ */
+async function pickTargetFramework(
+  current: string[],
+  allowUnchanged: boolean
+): Promise<string | 'unchanged' | undefined> {
+  const UNCHANGED = '\0unchanged';
+  const CUSTOM = '\0custom';
+  const currentSet = new Set(current.map((c) => c.toLowerCase()));
+  const items: (vscode.QuickPickItem & { value: string })[] = [];
+  if (allowUnchanged) {
+    items.push({ label: '$(circle-slash) Leave .NET version unchanged', value: UNCHANGED });
+  }
+  for (const tfm of targetFrameworkOptions(current)) {
+    items.push({
+      label: tfm,
+      description: currentSet.has(tfm.toLowerCase()) ? 'current' : undefined,
+      value: tfm,
+    });
+  }
+  items.push({ label: '$(edit) Enter a target framework…', value: CUSTOM });
+
+  const picked = await vscode.window.showQuickPick(items, {
+    title: 'Target .NET version',
+    placeHolder: current.length ? `Currently ${current.join(', ')}` : 'Choose a target framework',
+    matchOnDescription: true,
+  });
+  if (!picked) {
+    return undefined;
+  }
+  if (picked.value === UNCHANGED) {
+    return 'unchanged';
+  }
+  if (picked.value === CUSTOM) {
+    const typed = await vscode.window.showInputBox({
+      title: 'Target framework',
+      prompt: 'e.g. net9.0',
+      value: current[0] ?? 'net9.0',
+    });
+    return typed?.trim() || undefined;
+  }
+  return picked.value;
+}
+
+/** One target-framework edit: a single file (a .csproj or a shared Directory.Build.props). */
+interface TfmChange {
+  filePath: string;
+  displayName: string;
+  current: string;
+  target: string;
+  /** Projects this edit re-targets — for de-duping shared props files and the install prompt. */
+  projects: Project[];
+}
+
+/** Walk up from `startDir` for the nearest Directory.Build.props that declares a single TFM. */
+function findDirectoryBuildTfm(startDir: string): { path: string; current: string } | undefined {
+  let dir = startDir;
+  for (;;) {
+    const candidate = path.join(dir, 'Directory.Build.props');
+    if (fs.existsSync(candidate)) {
+      const declared = csprojReadTargetFrameworks(fs.readFileSync(candidate, 'utf8'));
+      if (declared && !declared.plural) {
+        return { path: candidate, current: declared.values[0] };
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      return undefined;
+    }
+    dir = parent;
+  }
+}
+
+/**
+ * Resolve the editable `<TargetFramework>` for each scoped project — its own .csproj, else the
+ * nearest Directory.Build.props — deduped per file so one shared props edit covers many projects.
+ * Projects already on `tfm` are dropped; multi-target or inherited-with-no-props projects are
+ * returned as `skipped` so the caller can tell the user they were left alone.
+ */
+function buildTfmChanges(
+  scope: Project[],
+  tfm: string
+): { changes: TfmChange[]; skipped: { project: Project; reason: string }[] } {
+  const byFile = new Map<string, TfmChange>();
+  const skipped: { project: Project; reason: string }[] = [];
+
+  for (const project of scope) {
+    const projPath = project.manifestPath;
+    let filePath: string;
+    let current: string;
+    let displayName: string;
+
+    let declared: { plural: boolean; values: string[] } | undefined;
+    try {
+      declared = csprojReadTargetFrameworks(fs.readFileSync(projPath, 'utf8'));
+    } catch {
+      skipped.push({ project, reason: 'could not read project file' });
+      continue;
+    }
+
+    if (declared?.plural) {
+      skipped.push({ project, reason: 'multi-target (<TargetFrameworks>)' });
+      continue;
+    } else if (declared) {
+      filePath = projPath;
+      current = declared.values[0];
+      displayName = project.name;
+    } else {
+      const props = findDirectoryBuildTfm(path.dirname(projPath));
+      if (!props) {
+        skipped.push({ project, reason: 'no editable <TargetFramework> found' });
+        continue;
+      }
+      filePath = props.path;
+      current = props.current;
+      displayName = path.basename(props.path);
+    }
+
+    if (current.toLowerCase() === tfm.toLowerCase()) {
+      continue; // already on the target framework
+    }
+
+    const existing = byFile.get(filePath);
+    if (existing) {
+      existing.projects.push(project);
+    } else {
+      byFile.set(filePath, { filePath, displayName, current, target: tfm, projects: [project] });
+    }
+  }
+  return { changes: [...byFile.values()], skipped };
+}
+
+/** Apply each target-framework edit; returns the distinct projects touched (for the install prompt). */
+async function applyTfmChanges(changes: TfmChange[]): Promise<{ projects: Project[]; failures: string[] }> {
+  const projects: Project[] = [];
+  const seen = new Set<string>();
+  const failures: string[] = [];
+  for (const change of changes) {
+    try {
+      const updated = csprojUpdateTargetFramework(fs.readFileSync(change.filePath, 'utf8'), change.target);
+      if (updated === undefined) {
+        failures.push(`${change.displayName} (no <TargetFramework> to edit)`);
+        continue;
+      }
+      await writeFileWithUndo(change.filePath, updated);
+      for (const project of change.projects) {
+        if (!seen.has(project.manifestPath)) {
+          seen.add(project.manifestPath);
+          projects.push(project);
+        }
+      }
+    } catch (err) {
+      failures.push(`${change.displayName} (${err instanceof Error ? err.message : err})`);
+    }
+  }
+  return { projects, failures };
+}
+
+/** Tell the user which projects a .NET bump skipped (multi-target / inherited TFM). */
+function reportSkippedTfm(skipped: { project: Project; reason: string }[]): void {
+  if (skipped.length === 0) {
+    return;
+  }
+  vscode.window.showInformationMessage(
+    `Left the target framework unchanged in ${skipped.length} project${skipped.length === 1 ? '' : 's'}: ` +
+      `${skipped.map((s) => `${s.project.name} (${s.reason})`).join(', ')}.`
+  );
+}
+
+/** NuGet projects in the workspace, or an info message + empty list when there are none. */
+async function nugetProjectScope(tree: DependencyTreeProvider): Promise<Project[]> {
+  await tree.ensureScanned();
+  const nuget = tree.getProjects().filter((p) => p.ecosystem === 'NuGet');
+  if (nuget.length === 0) {
+    vscode.window.showInformationMessage('Dependency Explorer: no .NET (NuGet) projects in this workspace.');
+  }
+  return nuget;
+}
+
+/**
+ * Bump only the .NET `<TargetFramework>` across a chosen scope of NuGet projects. Independent of
+ * Aspire — for plain .NET solutions, or when you just want to move the target framework.
+ */
+async function bumpDotnetVersion(tree: DependencyTreeProvider, project?: Project): Promise<void> {
+  if (project && project.ecosystem !== 'NuGet') {
+    vscode.window.showInformationMessage('Bump .NET Version applies to .NET (NuGet) projects only.');
+    return;
+  }
+  const nuget = await nugetProjectScope(tree);
+  if (nuget.length === 0) {
+    return;
+  }
+  const scope = project ? [project] : await chooseProjectScope(nuget, 'Bump .NET version');
+  if (!scope || scope.length === 0) {
+    return;
+  }
+
+  const tfm = await pickTargetFramework(distinctCurrentTfms(tree, scope), false);
+  if (!tfm || tfm === 'unchanged') {
+    return;
+  }
+
+  const { changes, skipped } = buildTfmChanges(scope, tfm);
+  reportSkippedTfm(skipped);
+  if (changes.length === 0) {
+    vscode.window.showInformationMessage(
+      `Dependency Explorer: every project in ${scopeLabel(scope)} already targets ${tfm}.`
+    );
+    return;
+  }
+
+  const chosen = await confirmTfmChanges(changes, `Bump .NET to ${tfm}`);
+  if (!chosen || chosen.length === 0) {
+    return;
+  }
+  const { projects, failures } = await applyTfmChanges(chosen);
+  if (failures.length > 0) {
+    vscode.window.showWarningMessage(`Some target frameworks could not be changed: ${failures.join('; ')}`);
+  }
+  if (projects.length > 0) {
+    await offerInstall(projects, `Set target framework to ${tfm} in ${scopeLabel(projects)}.`);
+  }
+}
+
+/** Confirmation checklist for a set of target-framework edits; returns the kept ones. */
+async function confirmTfmChanges(changes: TfmChange[], title: string): Promise<TfmChange[] | undefined> {
+  const picks = changes.map((change) => ({
+    label: `${change.displayName}  ${change.current} → ${change.target}`,
+    description: change.filePath.endsWith('.props')
+      ? `Directory.Build.props · ${change.projects.length} project${change.projects.length === 1 ? '' : 's'}`
+      : 'project file',
+    picked: true,
+    change,
+  }));
+  const picked = await vscode.window.showQuickPick(picks, {
+    title,
+    placeHolder: 'Toggle the projects to re-target, then press OK',
+    canPickMany: true,
+    matchOnDescription: true,
+  });
+  return picked ? picked.map((p) => p.change) : undefined;
+}
+
+/** True when a project uses .NET Aspire (references an Aspire.* package, or declares the AppHost SDK). */
+function projectHasAspire(tree: DependencyTreeProvider, project: Project): boolean {
+  if (tree.getAllDistinctPackages(project).some((pkg) => isAspirePackage(pkg.name))) {
+    return true;
+  }
+  try {
+    return csprojReadAspireSdkVersion(fs.readFileSync(project.manifestPath, 'utf8')) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/** Best-guess current Aspire version for the picker default: the AppHost SDK, else an Aspire.* package. */
+function currentAspireVersion(tree: DependencyTreeProvider, projects: Project[]): string | undefined {
+  for (const project of projects) {
+    try {
+      const sdk = csprojReadAspireSdkVersion(fs.readFileSync(project.manifestPath, 'utf8'));
+      if (sdk) {
+        return sdk;
+      }
+    } catch {
+      // ignore unreadable project files
+    }
+  }
+  for (const project of projects) {
+    const pkg = tree.getAllDistinctPackages(project).find((p) => isAspirePackage(p.name));
+    if (pkg) {
+      return pkg.version;
+    }
+  }
+  return undefined;
+}
+
+/** A single planned Aspire/.NET change, shown as one confirmation row. */
+type AspireChange =
+  | { kind: 'pkg'; project: Project; name: string; current: string; target: string }
+  | { kind: 'sdk'; project: Project; filePath: string; current: string; target: string }
+  | { kind: 'tfm'; change: TfmChange };
+
+/**
+ * Bump .NET Aspire in a chosen scope: set the Aspire.AppHost.Sdk and every first-party Aspire.*
+ * package to one chosen Aspire version, and — optionally — move the .NET target framework across the
+ * whole scope. Every change is previewed as a checklist before anything is written.
+ */
+async function bumpAspireVersions(tree: DependencyTreeProvider, project?: Project): Promise<void> {
+  if (project && project.ecosystem !== 'NuGet') {
+    vscode.window.showInformationMessage('Bump .NET & Aspire applies to .NET (NuGet) projects only.');
+    return;
+  }
+  const nuget = await nugetProjectScope(tree);
+  if (nuget.length === 0) {
+    return;
+  }
+  if (!nuget.some((p) => projectHasAspire(tree, p))) {
+    vscode.window.showInformationMessage(
+      'Dependency Explorer: no .NET Aspire projects found (nothing references an Aspire.* package or the Aspire.AppHost.Sdk).'
+    );
+    return;
+  }
+
+  const scope = project ? [project] : await chooseProjectScope(nuget, 'Bump .NET & Aspire versions');
+  if (!scope || scope.length === 0) {
+    return;
+  }
+  const aspireProjects = scope.filter((p) => projectHasAspire(tree, p));
+  const refProject = aspireProjects[0] ?? scope[0];
+
+  // Pick the target Aspire version (exact pin — Aspire versions aren't written as ranges).
+  const aspireChoice = await pickVersion(
+    'NuGet',
+    ASPIRE_VERSION_REF,
+    currentAspireVersion(tree, aspireProjects) ?? '',
+    dirOf(refProject),
+    true
+  );
+  if (!aspireChoice) {
+    return;
+  }
+  const aspireVersion = aspireChoice.concrete;
+
+  // The .NET bump is optional here.
+  const tfmChoice = await pickTargetFramework(distinctCurrentTfms(tree, scope), true);
+  if (tfmChoice === undefined) {
+    return;
+  }
+  const targetTfm = tfmChoice === 'unchanged' ? undefined : tfmChoice;
+
+  const changes = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Preparing Aspire bump…' },
+    () => buildAspireChanges(tree, scope, aspireProjects, aspireVersion, targetTfm)
+  );
+  if (changes.length === 0) {
+    vscode.window.showInformationMessage(
+      `Dependency Explorer: nothing to change — ${scopeLabel(scope)} is already on Aspire ${aspireVersion}${targetTfm ? ` / ${targetTfm}` : ''}.`
+    );
+    return;
+  }
+
+  const chosen = await confirmAspireChanges(changes);
+  if (!chosen || chosen.length === 0) {
+    return;
+  }
+  await applyAspireChanges(chosen, aspireVersion);
+}
+
+/** Assemble the package / SDK / TFM changes, dropping any Aspire package that lacks the target version. */
+async function buildAspireChanges(
+  tree: DependencyTreeProvider,
+  scope: Project[],
+  aspireProjects: Project[],
+  aspireVersion: string,
+  targetTfm: string | undefined
+): Promise<AspireChange[]> {
+  const changes: AspireChange[] = [];
+
+  // Direct Aspire.* package references (per project), and the AppHost SDK where declared.
+  for (const project of aspireProjects) {
+    for (const pkg of tree.getAllDistinctPackages(project)) {
+      if (isAspirePackage(pkg.name) && pkg.isDirect && pkg.version !== aspireVersion) {
+        changes.push({ kind: 'pkg', project, name: pkg.name, current: pkg.version, target: aspireVersion });
+      }
+    }
+    try {
+      const sdk = csprojReadAspireSdkVersion(fs.readFileSync(project.manifestPath, 'utf8'));
+      if (sdk && sdk !== aspireVersion) {
+        changes.push({ kind: 'sdk', project, filePath: project.manifestPath, current: sdk, target: aspireVersion });
+      }
+    } catch {
+      // unreadable project file — skip its SDK
+    }
+  }
+
+  // Drop package changes for any Aspire.* id that the feed doesn't actually publish at this version,
+  // so we never write a version that doesn't exist. A feed error (not a "no such version") leaves the
+  // package in — we don't strip changes just because a feed was briefly unreachable.
+  const names = [...new Set(changes.filter((c) => c.kind === 'pkg').map((c) => (c as { name: string }).name))];
+  const availability = await mapWithConcurrency(names, VERSION_FETCH_CONCURRENCY, async (name) => {
+    try {
+      const { versions } = await fetchVersions('NuGet', name, dirOf(aspireProjects[0] ?? scope[0]));
+      return { name, published: versions.includes(aspireVersion), known: true };
+    } catch {
+      return { name, published: true, known: false };
+    }
+  });
+  const unavailable = new Set(availability.filter((a) => a.known && !a.published).map((a) => a.name));
+  if (unavailable.size > 0) {
+    vscode.window.showWarningMessage(
+      `Aspire ${aspireVersion} isn't published for ${unavailable.size} package${unavailable.size === 1 ? '' : 's'} — left unchanged: ${[...unavailable].join(', ')}.`
+    );
+  }
+  const filtered = changes.filter((c) => c.kind !== 'pkg' || !unavailable.has(c.name));
+
+  // Optional .NET target-framework bump across the whole scope.
+  if (targetTfm) {
+    const { changes: tfmChanges, skipped } = buildTfmChanges(scope, targetTfm);
+    reportSkippedTfm(skipped);
+    for (const change of tfmChanges) {
+      filtered.push({ kind: 'tfm', change });
+    }
+  }
+  return filtered;
+}
+
+/** Confirmation checklist for an Aspire bump; every change pre-checked. Returns the kept changes. */
+async function confirmAspireChanges(changes: AspireChange[]): Promise<AspireChange[] | undefined> {
+  const picks = changes.map((change) => {
+    if (change.kind === 'pkg') {
+      return {
+        label: `${change.name}  ${change.current} → ${change.target}`,
+        description: `${change.project.name} · Aspire package`,
+        picked: true,
+        change,
+      };
+    }
+    if (change.kind === 'sdk') {
+      return {
+        label: `${ASPIRE_SDK_NAME} (SDK)  ${change.current} → ${change.target}`,
+        description: `${change.project.name} · AppHost SDK`,
+        picked: true,
+        change,
+      };
+    }
+    return {
+      label: `Target framework  ${change.change.current} → ${change.change.target}`,
+      description: `${change.change.displayName} · .NET`,
+      picked: true,
+      change,
+    };
+  });
+  const picked = await vscode.window.showQuickPick(picks, {
+    title: 'Bump .NET & Aspire — review changes',
+    placeHolder: 'Toggle the changes to apply, then press OK',
+    canPickMany: true,
+    matchOnDescription: true,
+  });
+  return picked ? picked.map((p) => p.change) : undefined;
+}
+
+/** Apply the chosen Aspire changes (packages, SDK, TFM), then offer to run dotnet restore. */
+async function applyAspireChanges(chosen: AspireChange[], aspireVersion: string): Promise<void> {
+  const appliedProjects: Project[] = [];
+  const appliedSet = new Set<string>();
+  const failures: string[] = [];
+  const track = (project: Project) => {
+    if (!appliedSet.has(project.manifestPath)) {
+      appliedSet.add(project.manifestPath);
+      appliedProjects.push(project);
+    }
+  };
+
+  // TFM edits are deduped/applied as a batch (a shared props file may back several projects).
+  const tfmChanges: TfmChange[] = [];
+  for (const change of chosen) {
+    try {
+      if (change.kind === 'pkg') {
+        await applyToProject('NuGet', change.name, aspireVersion, {
+          project: change.project,
+          isDirect: true,
+          version: change.current,
+        });
+        track(change.project);
+      } else if (change.kind === 'sdk') {
+        const updated = csprojUpdateAspireSdkVersion(fs.readFileSync(change.filePath, 'utf8'), change.target);
+        if (updated === undefined) {
+          failures.push(`${ASPIRE_SDK_NAME} in ${change.project.name} (SDK not found)`);
+        } else {
+          await writeFileWithUndo(change.filePath, updated);
+          track(change.project);
+        }
+      } else {
+        tfmChanges.push(change.change);
+      }
+    } catch (err) {
+      const where = change.kind === 'tfm' ? change.change.displayName : change.project.name;
+      failures.push(`${where} (${err instanceof Error ? err.message : err})`);
+    }
+  }
+
+  const tfmResult = await applyTfmChanges(tfmChanges);
+  failures.push(...tfmResult.failures);
+  for (const project of tfmResult.projects) {
+    track(project);
+  }
+
+  if (failures.length > 0) {
+    vscode.window.showWarningMessage(`Some Aspire changes could not be applied: ${failures.join('; ')}`);
+  }
+  if (appliedProjects.length > 0) {
+    await offerInstall(appliedProjects, `Bumped Aspire to ${aspireVersion} in ${scopeLabel(appliedProjects)}.`);
+  }
 }
 
 /** Human-readable label for a chosen scope (single project name, or "the N selected projects"). */
@@ -958,7 +1489,8 @@ async function pickVersion(
   ecosystem: Ecosystem,
   name: string,
   currentVersion: string,
-  projectDir: string
+  projectDir: string,
+  skipRange = false
 ): Promise<VersionChoice | undefined> {
   let versions: string[] = [];
   let latest: string | undefined;
@@ -1010,7 +1542,11 @@ async function pickVersion(
     return typed?.trim() ? asChoice(typed.trim()) : undefined;
   }
 
-  // The user picked a concrete version; now let them pin it or wrap it in a range.
+  // Callers that want an exact version (e.g. the Aspire bump, where versions are always pinned)
+  // take the concrete pick as-is; otherwise let the user pin it or wrap it in a range.
+  if (skipRange) {
+    return { concrete: picked.label, spec: picked.label };
+  }
   const spec = await pickRange(ecosystem, picked.label);
   return spec ? { concrete: picked.label, spec } : undefined;
 }

@@ -286,7 +286,9 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
     // Keep the ecosystem icon on the left; the badge on the right conveys vulnerability.
     item.iconPath = new vscode.ThemeIcon(project.ecosystem === 'npm' ? 'json' : 'project');
 
-    item.contextValue = 'project';
+    // NuGet projects get a more specific contextValue so the .NET/Aspire bump commands can be
+    // offered on them alone; menus common to all projects match the `^project` prefix.
+    item.contextValue = project.ecosystem === 'NuGet' ? 'project.nuget' : 'project';
     item.tooltip = this.projectTooltip(project, summary);
     item.command = {
       command: 'dependencyExplorer.openManifest',
