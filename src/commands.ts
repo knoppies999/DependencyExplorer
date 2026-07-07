@@ -358,6 +358,31 @@ async function fixAcrossProjects(tree: DependencyTreeProvider): Promise<void> {
 /** Newer-than-current candidate versions, nearest first, capped to bound OSV queries. */
 const FIX_CANDIDATE_CAP = 40;
 
+/** How many registry version lookups to run at once when building a bulk plan. */
+const VERSION_FETCH_CONCURRENCY = 8;
+
+/**
+ * Resolve `fn` over `items` with at most `limit` calls in flight at once, preserving input order in
+ * the result. A bulk plan is dominated by registry version lookups, so running them in parallel
+ * (instead of one serial `await` per package) is what keeps "fix all" / "update all" fast on large
+ * workspaces — while the cap keeps us from opening an unbounded number of connections.
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    for (let i = cursor++; i < items.length; i = cursor++) {
+      results[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 function candidateVersions(versions: string[], current: string): string[] {
   return versions
     .filter((v) => compareVersionsDesc(v, current) < 0) // strictly newer than current
@@ -614,42 +639,54 @@ async function buildFixPlan(
   const pending: (FixPlanItem & { versions: string[]; latest?: string; wantLatest: boolean })[] = [];
   const unresolved: UnresolvedPackage[] = [];
   const held = new Set<string>();
+
+  // Flatten to a work list first (holding back never-update packages), then resolve the version
+  // lists in parallel — these registry round-trips dominate the plan, so serializing them is what
+  // makes "fix all" crawl on large workspaces.
+  const jobs: { project: Project; vuln: { name: string; version: string; isDirect: boolean } }[] = [];
   for (const project of scope) {
     for (const vuln of tree.getVulnerablePackages(project)) {
       if (isNeverUpdate(vuln.name)) {
         // On the never-update list: leave it untouched even though it's vulnerable.
         held.add(vuln.name);
-        continue;
+      } else {
+        jobs.push({ project, vuln });
       }
-      let versions: string[];
-      let latest: string | undefined;
-      try {
-        const result = await fetchVersions(project.ecosystem, vuln.name, dirOf(project));
-        versions = result.versions;
-        latest = result.latest;
-      } catch {
-        // Couldn't reach the feed (or timed out) — record it so the user can decide, rather than
-        // conflating it with "resolved, but no safe version exists".
-        unresolved.push({
-          project,
-          ecosystem: project.ecosystem,
-          name: vuln.name,
-          isDirect: vuln.isDirect,
-          currentVersion: vuln.version,
-        });
-        continue;
-      }
-      pending.push({
+    }
+  }
+
+  const resolved = await mapWithConcurrency(jobs, VERSION_FETCH_CONCURRENCY, async ({ project, vuln }) => {
+    try {
+      const { versions, latest } = await fetchVersions(project.ecosystem, vuln.name, dirOf(project));
+      return { project, vuln, versions, latest };
+    } catch {
+      // Couldn't reach the feed (or timed out) — leave versions undefined so it's surfaced as
+      // unresolved, rather than conflating it with "resolved, but no safe version exists".
+      return { project, vuln, versions: undefined as string[] | undefined, latest: undefined };
+    }
+  });
+
+  for (const { project, vuln, versions, latest } of resolved) {
+    if (!versions) {
+      unresolved.push({
         project,
         ecosystem: project.ecosystem,
         name: vuln.name,
         isDirect: vuln.isDirect,
         currentVersion: vuln.version,
-        versions,
-        latest,
-        wantLatest: matchesAnyPattern(vuln.name, alwaysLatest),
       });
+      continue;
     }
+    pending.push({
+      project,
+      ecosystem: project.ecosystem,
+      name: vuln.name,
+      isDirect: vuln.isDirect,
+      currentVersion: vuln.version,
+      versions,
+      latest,
+      wantLatest: matchesAnyPattern(vuln.name, alwaysLatest),
+    });
   }
 
   // Batch OSV safety queries for every candidate version across the whole plan, plus the latest
@@ -699,39 +736,54 @@ async function buildUpdatePlan(
   const items: FixPlanItem[] = [];
   const unresolved: UnresolvedPackage[] = [];
   const held = new Set<string>();
+
+  // Flatten first (holding back never-update packages), then resolve latest versions in parallel;
+  // serial lookups are the main reason a large "update all" stalls, and one unreachable feed
+  // shouldn't hold the rest of the plan hostage.
+  const jobs: { project: Project; pkg: { name: string; version: string; isDirect: boolean } }[] = [];
   for (const project of scope) {
     for (const pkg of tree.getAllDistinctPackages(project)) {
       if (isNeverUpdate(pkg.name)) {
         held.add(pkg.name);
-        continue;
+      } else {
+        jobs.push({ project, pkg });
       }
-      let latest: string | undefined;
-      try {
-        latest = (await fetchVersions(project.ecosystem, pkg.name, dirOf(project))).latest;
-      } catch {
-        // Feed unreachable or timed out — surface it instead of silently dropping the package.
-        unresolved.push({
-          project,
-          ecosystem: project.ecosystem,
-          name: pkg.name,
-          isDirect: pkg.isDirect,
-          currentVersion: pkg.version,
-        });
-        continue;
-      }
-      // Only include a package when the registry offers a strictly newer version to move to.
-      if (!latest || compareVersionsDesc(latest, pkg.version) >= 0) {
-        continue;
-      }
-      items.push({
+    }
+  }
+
+  const resolved = await mapWithConcurrency(jobs, VERSION_FETCH_CONCURRENCY, async ({ project, pkg }) => {
+    try {
+      const { latest } = await fetchVersions(project.ecosystem, pkg.name, dirOf(project));
+      return { project, pkg, latest, failed: false };
+    } catch {
+      // Feed unreachable or timed out — flag it so it's surfaced, not silently dropped.
+      return { project, pkg, latest: undefined as string | undefined, failed: true };
+    }
+  });
+
+  for (const { project, pkg, latest, failed } of resolved) {
+    if (failed) {
+      unresolved.push({
         project,
         ecosystem: project.ecosystem,
         name: pkg.name,
         isDirect: pkg.isDirect,
         currentVersion: pkg.version,
-        targetVersion: latest,
       });
+      continue;
     }
+    // Only include a package when the registry offers a strictly newer version to move to.
+    if (!latest || compareVersionsDesc(latest, pkg.version) >= 0) {
+      continue;
+    }
+    items.push({
+      project,
+      ecosystem: project.ecosystem,
+      name: pkg.name,
+      isDirect: pkg.isDirect,
+      currentVersion: pkg.version,
+      targetVersion: latest,
+    });
   }
   return { items, unresolved, held: [...held].sort((a, b) => a.localeCompare(b)) };
 }

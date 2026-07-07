@@ -2,6 +2,44 @@
 
 All notable changes to the **Dependency Explorer** extension are documented here.
 
+## 1.4.0 — 2026-07-07
+
+### Added
+
+- **Azure DevOps credential-provider support** — private NuGet feed lookups now authenticate on a
+  developer machine where the token lives in the Microsoft Artifacts Credential Provider (the store
+  `dotnet` and Visual Studio use) rather than in `NuGet.config`. When a feed returns 401/403 and no
+  credentials are found in `NuGet.config` or the environment, the extension invokes the provider
+  non-interactively (`-OutputFormat Json`) and retries with the token it returns — running it at most
+  once per feed per session. If you're not signed in it fails fast with a clear auth error (run
+  `dotnet restore` once to sign in, then refresh). Honors `NUGET_PLUGIN_PATHS` for a custom provider
+  location. This also covers self-hosted Azure DevOps Server, since it triggers on the 401 rather
+  than the feed hostname.
+- **`ARTIFACTS_CREDENTIALPROVIDER_EXTERNAL_FEED_ENDPOINTS`** — the modern credential-provider env var
+  is now read in addition to the legacy `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS` (CI / injected creds).
+- **Automated test suite** — `npm test` compiles and runs `node --test`, covering feed resolution,
+  NuGet authentication, and bulk-plan concurrency.
+
+### Changed
+
+- **Bulk operations resolve versions in parallel** — **Fix All Vulnerabilities** and **Update All
+  Packages to Latest** now look up package versions concurrently (up to 8 at a time) instead of one
+  at a time, so large workspaces complete far faster.
+- **A dead or slow NuGet feed no longer stalls a bulk run per package** — each service index is now
+  probed once per run under its own 8-second budget (independent of the 30-second per-package
+  timeout), and an unreachable feed is briefly remembered so the rest of the run skips it instantly
+  instead of re-probing it for every package.
+
+### Fixed
+
+- **NuGet authentication failures are reported as such** — a 401/403 from a private/Azure feed now
+  surfaces as `authentication failed (HTTP 401) — this feed needs valid credentials` instead of the
+  misleading "service index unreachable".
+- **Basic-auth credentials with no `<Username>`** — a `NuGet.config` `ClearTextPassword` (or
+  DPAPI-encrypted `<Password>`) that omits the username no longer sends an empty Basic username,
+  which Azure DevOps rejects; a non-empty placeholder is used, matching the env/credential-provider
+  paths.
+
 ## 1.3.0 — 2026-07-06
 
 ### Added

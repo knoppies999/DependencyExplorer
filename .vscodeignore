@@ -1,6 +1,7 @@
 .vscode/**
 .claude/**
 src/**
+test/**
 tsconfig.json
 **/*.map
 **/*.ts

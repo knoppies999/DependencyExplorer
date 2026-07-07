@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
+import { getCredentialProviderAuth, _resetCredentialProviderCache } from './credentialProvider';
 
 /**
  * Resolves the package feeds a project actually uses — from its own `.npmrc` (npm/pnpm) and
@@ -15,6 +16,9 @@ import { execFileSync } from 'child_process';
 
 const DEFAULT_NPM_REGISTRY = 'https://registry.npmjs.org/';
 const DEFAULT_NUGET_INDEX = 'https://api.nuget.org/v3/index.json';
+
+/** Basic-auth username substituted when a PAT feed's config omits one (Azure DevOps rejects empty). */
+const PAT_FALLBACK_USERNAME = 'AzureDevOps';
 
 export interface NpmFeed {
   /** Registry base URL (always ends with a single trailing slash). */
@@ -229,7 +233,21 @@ interface NugetConfig {
 }
 
 const nugetConfigCache = new Map<string, NugetConfig>();
-const serviceIndexCache = new Map<string, Promise<NugetServiceEndpoints | undefined>>();
+
+interface ServiceIndexEntry {
+  promise: Promise<NugetServiceEndpoints | undefined>;
+  /** When set, `promise` resolved to a *failure* that may be retried once this epoch-ms time passes. */
+  failedUntil?: number;
+  /** Human-readable reason the probe resolved to `undefined` (auth failure, HTTP status, network). */
+  reason?: string;
+}
+
+/** Standalone budget for the service-index probe, decoupled from the per-package version timeout. */
+const SERVICE_INDEX_TIMEOUT_MS = 8_000;
+/** How long a failed service-index probe is remembered, so a bulk run skips a dead feed fast. */
+const SERVICE_INDEX_FAILURE_TTL_MS = 60_000;
+
+const serviceIndexCache = new Map<string, ServiceIndexEntry>();
 const dpapiCache = new Map<string, string | undefined>();
 let vssCredsCache: Map<string, { username?: string; password: string }> | undefined;
 let warnedEncryptedPassword = false;
@@ -360,9 +378,11 @@ function parseCredentials(block: string, cfg: NugetConfig): void {
     const clear = entries.get('cleartextpassword');
     const encrypted = entries.get('password');
     if (clear) {
-      // Feeds like Azure DevOps accept any username with a PAT as the password; others (token
-      // feeds) leave the username empty. Send whatever the config provides.
-      const basic = Buffer.from(`${username ?? ''}:${expandNugetEnv(clear)}`).toString('base64');
+      // Azure DevOps (and most PAT feeds) reject an empty Basic username, so fall back to a
+      // non-empty placeholder when the config omits one — token feeds ignore the username anyway.
+      const basic = Buffer.from(`${username || PAT_FALLBACK_USERNAME}:${expandNugetEnv(clear)}`).toString(
+        'base64'
+      );
       cfg.credentials.set(key, `Basic ${basic}`);
     } else if (encrypted) {
       // DPAPI-encrypted <Password> — decrypted lazily on Windows in resolveNugetSources.
@@ -386,7 +406,7 @@ function decryptNugetCredential(enc?: { username?: string; password: string }): 
   if (password === undefined) {
     return undefined;
   }
-  const basic = Buffer.from(`${enc.username ?? ''}:${password}`).toString('base64');
+  const basic = Buffer.from(`${enc.username || PAT_FALLBACK_USERNAME}:${password}`).toString('base64');
   return `Basic ${basic}`;
 }
 
@@ -421,15 +441,18 @@ function decryptDpapi(encrypted: string): string | undefined {
 }
 
 /**
- * Credentials injected by the Azure Artifacts Credential Provider (and compatible CI setups) via
- * the `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS` env var. Keyed by normalized endpoint (service index) URL.
+ * Credentials injected by the Azure Artifacts Credential Provider (and compatible CI setups) via an
+ * env var — the modern `ARTIFACTS_CREDENTIALPROVIDER_EXTERNAL_FEED_ENDPOINTS` or the legacy
+ * `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS`. Keyed by normalized endpoint (service index) URL.
  */
 function vssEndpointCredentials(): Map<string, { username?: string; password: string }> {
   if (vssCredsCache) {
     return vssCredsCache;
   }
   const map = new Map<string, { username?: string; password: string }>();
-  const raw = process.env.VSS_NUGET_EXTERNAL_FEED_ENDPOINTS;
+  const raw =
+    process.env.ARTIFACTS_CREDENTIALPROVIDER_EXTERNAL_FEED_ENDPOINTS ??
+    process.env.VSS_NUGET_EXTERNAL_FEED_ENDPOINTS;
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as {
@@ -454,7 +477,7 @@ function envProviderCredential(indexUrl: string): string | undefined {
     return undefined;
   }
   // Azure DevOps accepts any non-empty username paired with the PAT as the password.
-  const basic = Buffer.from(`${cred.username || 'AzureDevOps'}:${cred.password}`).toString('base64');
+  const basic = Buffer.from(`${cred.username || PAT_FALLBACK_USERNAME}:${cred.password}`).toString('base64');
   return `Basic ${basic}`;
 }
 
@@ -573,45 +596,87 @@ export function getNugetServiceEndpoints(
   signal?: AbortSignal
 ): Promise<NugetServiceEndpoints | undefined> {
   const cached = serviceIndexCache.get(source.indexUrl);
-  if (cached) {
-    return cached;
+  if (cached && (cached.failedUntil === undefined || cached.failedUntil > Date.now())) {
+    return cached.promise;
   }
-  const promise = (async (): Promise<NugetServiceEndpoints | undefined> => {
-    if (!/\.json(\?|$)/i.test(source.indexUrl)) {
-      // Not a V3 service index — treat it as a legacy V2 OData feed and query it directly.
-      return { v2Base: withTrailingSlash(source.indexUrl), headers: source.headers };
-    }
-    try {
-      const res = await fetch(source.indexUrl, { headers: source.headers, signal });
-      if (!res.ok) {
-        // 4xx/5xx is a property of the feed — cache it so we don't re-hit a broken source.
+
+  // Probe the service index under its own short budget, independent of the per-package version
+  // timeout, so one unreachable feed fails fast instead of stalling every lookup for the full
+  // package budget. A caller-supplied signal (e.g. a cancelled bulk run) still aborts it.
+  const ownTimeout = AbortSignal.timeout(SERVICE_INDEX_TIMEOUT_MS);
+  const probeSignal = signal ? AbortSignal.any([signal, ownTimeout]) : ownTimeout;
+
+  const entry: ServiceIndexEntry = {
+    promise: (async (): Promise<NugetServiceEndpoints | undefined> => {
+      if (!/\.json(\?|$)/i.test(source.indexUrl)) {
+        // Not a V3 service index — treat it as a legacy V2 OData feed and query it directly.
+        return { v2Base: withTrailingSlash(source.indexUrl), headers: source.headers };
+      }
+      try {
+        let headers = source.headers;
+        let res = await fetch(source.indexUrl, { headers, signal: probeSignal });
+
+        // If the feed rejects us for auth and we have no configured credentials, consult the
+        // Microsoft credential provider (the Azure DevOps token store `dotnet`/Visual Studio use)
+        // and retry once. The successful headers flow into the endpoints below, so every downstream
+        // version/nuspec call is authenticated too. It's a cheap no-op when no provider is installed.
+        if ((res.status === 401 || res.status === 403) && !headers.authorization) {
+          const cred = await getCredentialProviderAuth(source.indexUrl);
+          if (cred) {
+            headers = { ...headers, authorization: cred };
+            res = await fetch(source.indexUrl, { headers, signal: probeSignal });
+          }
+        }
+        if (!res.ok) {
+          // 4xx/5xx is a property of the feed — cache it so we don't re-hit a broken source, and
+          // record *why*. Distinguishing an auth failure (401/403) from a plain broken feed is what
+          // lets a bulk run tell the user an Azure/private feed needs credentials, instead of the
+          // misleading "unreachable".
+          const self = serviceIndexCache.get(source.indexUrl);
+          if (self) {
+            self.reason =
+              res.status === 401 || res.status === 403
+                ? `authentication failed (HTTP ${res.status}) — this feed needs valid credentials`
+                : `service index returned HTTP ${res.status}`;
+          }
+          return undefined;
+        }
+        const data = (await res.json()) as { resources?: { '@id': string; '@type': string }[] };
+        const resources = data.resources ?? [];
+        const flat = resources.find((r) => r['@type']?.startsWith('PackageBaseAddress/3.0.0'));
+        let registrationsBase: string | undefined;
+        for (const type of REG_TYPE_PREFERENCE) {
+          const hit = resources.find((r) => r['@type'] === type);
+          if (hit?.['@id']) {
+            registrationsBase = withTrailingSlash(hit['@id']);
+            break;
+          }
+        }
+        return {
+          flatContainer: flat?.['@id'] ? withTrailingSlash(flat['@id']) : undefined,
+          registrationsBase,
+          headers,
+        };
+      } catch {
+        // A timeout/abort or network blip is transient. Deleting the entry (the old behavior) made a
+        // bulk run re-probe a dead feed once per package, each paying the timeout. Instead mark it
+        // failed for a short TTL so the rest of the run skips it fast, then a later refresh retries.
+        const self = serviceIndexCache.get(source.indexUrl);
+        if (self) {
+          self.failedUntil = Date.now() + SERVICE_INDEX_FAILURE_TTL_MS;
+          self.reason = 'service index unreachable (network error or timeout)';
+        }
         return undefined;
       }
-      const data = (await res.json()) as { resources?: { '@id': string; '@type': string }[] };
-      const resources = data.resources ?? [];
-      const flat = resources.find((r) => r['@type']?.startsWith('PackageBaseAddress/3.0.0'));
-      let registrationsBase: string | undefined;
-      for (const type of REG_TYPE_PREFERENCE) {
-        const hit = resources.find((r) => r['@type'] === type);
-        if (hit?.['@id']) {
-          registrationsBase = withTrailingSlash(hit['@id']);
-          break;
-        }
-      }
-      return {
-        flatContainer: flat?.['@id'] ? withTrailingSlash(flat['@id']) : undefined,
-        registrationsBase,
-        headers: source.headers,
-      };
-    } catch {
-      // A timeout/abort or network blip is transient — drop it from the cache so a later package
-      // (with a fresh budget) can retry this source instead of inheriting the failure.
-      serviceIndexCache.delete(source.indexUrl);
-      return undefined;
-    }
-  })();
-  serviceIndexCache.set(source.indexUrl, promise);
-  return promise;
+    })(),
+  };
+  serviceIndexCache.set(source.indexUrl, entry);
+  return entry.promise;
+}
+
+/** Human-readable reason the last service-index probe for `indexUrl` failed, if it did. */
+export function nugetSourceFailureReason(indexUrl: string): string | undefined {
+  return serviceIndexCache.get(indexUrl)?.reason;
 }
 
 function stripQuotes(s: string): string {
@@ -626,4 +691,5 @@ export function _resetFeedCaches(): void {
   dpapiCache.clear();
   vssCredsCache = undefined;
   warnedEncryptedPassword = false;
+  _resetCredentialProviderCache();
 }
