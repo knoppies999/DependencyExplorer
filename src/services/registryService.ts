@@ -2,6 +2,7 @@ import { Ecosystem } from '../types';
 import {
   getNugetServiceEndpoints,
   joinUrl,
+  nugetSourceFailureReason,
   NugetServiceEndpoints,
   resolveNpmFeed,
   resolveNugetSources,
@@ -71,7 +72,7 @@ async function fetchNugetVersions(
     try {
       const endpoints = await getNugetServiceEndpoints(source, signal);
       if (!endpoints) {
-        errors.push(`${source.key}: service index unreachable`);
+        errors.push(`${source.key}: ${nugetSourceFailureReason(source.indexUrl) ?? 'service index unreachable'}`);
         continue;
       }
       const versions = await listVersions(name, endpoints, signal);

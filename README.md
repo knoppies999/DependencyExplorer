@@ -138,9 +138,15 @@ hardcoded public registry:
 - **NuGet** — reads `NuGet.config` (project directory upward, plus your user-level config):
   `<packageSources>`, `<disabledPackageSources>`, `<packageSourceCredentials>`, and
   `<packageSourceMapping>`.
+- **Azure DevOps & other private feeds** — when a feed needs auth but there are no credentials in
+  `NuGet.config` or the environment, the extension asks the Microsoft Artifacts Credential Provider
+  (the token store `dotnet` and Visual Studio use), so signed-in Azure DevOps feeds work with no
+  extra config. It also reads `ARTIFACTS_CREDENTIALPROVIDER_EXTERNAL_FEED_ENDPOINTS` /
+  `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS` (CI), and honors `NUGET_PLUGIN_PATHS` for a custom provider.
 
 No extra setup — if your terminal's `npm install` / `dotnet restore` can already reach a feed, so
-can the extension.
+can the extension. If an Azure feed reports an authentication error, run `dotnet restore` once to
+sign in, then refresh.
 
 ## Known limitations
 

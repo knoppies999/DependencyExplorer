@@ -2,7 +2,7 @@
   "name": "dependency-explorer",
   "displayName": "Dependency Explorer",
   "description": "Full dependency tree (including transitive dependencies) for npm, pnpm and NuGet projects, with vulnerability flags and one-click update, transitive override, or bulk fix.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "RuanduPlessis",
   "license": "MIT",
   "repository": {
@@ -308,6 +308,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test \"test/**/*.test.mjs\"",
     "vscode:prepublish": "npm run compile"
   },
   "dependencies": {
