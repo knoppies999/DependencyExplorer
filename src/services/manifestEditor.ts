@@ -204,6 +204,84 @@ function insertIntoItemGroup(xml: string, item: string, siblingTag: string): str
   return xml.slice(0, projectClose) + block + xml.slice(projectClose);
 }
 
+/* ----------------------------- .NET / Aspire ----------------------------- */
+
+// `<TargetFramework>net8.0</TargetFramework>`. The trailing `>` (not `s`) keeps this from matching
+// the plural `<TargetFrameworks>` element — the two are handled distinctly on purpose.
+const TFM_SINGLE = /<TargetFramework\s*>([^<]*)<\/TargetFramework\s*>/i;
+const TFM_PLURAL = /<TargetFrameworks\s*>([^<]*)<\/TargetFrameworks\s*>/i;
+
+/**
+ * Read a project's declared target framework(s) from its own .csproj. Returns the single
+ * `<TargetFramework>` value (`plural: false`), or the `;`-separated `<TargetFrameworks>` list
+ * (`plural: true`), or undefined when neither is declared here (e.g. inherited from
+ * Directory.Build.props).
+ */
+export function csprojReadTargetFrameworks(
+  xml: string
+): { plural: boolean; values: string[] } | undefined {
+  const single = TFM_SINGLE.exec(xml);
+  if (single) {
+    return { plural: false, values: [single[1].trim()] };
+  }
+  const plural = TFM_PLURAL.exec(xml);
+  if (plural) {
+    return {
+      plural: true,
+      values: plural[1]
+        .split(';')
+        .map((v) => v.trim())
+        .filter(Boolean),
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Rewrite a project's single `<TargetFramework>` to `tfm`. Returns undefined when the element is
+ * absent (the TFM is inherited, so there's nothing to edit here) or when only the multi-target
+ * `<TargetFrameworks>` form is present — the caller surfaces both as "skipped" rather than guessing
+ * which framework in a multi-target list to change.
+ */
+export function csprojUpdateTargetFramework(xml: string, tfm: string): string | undefined {
+  if (!TFM_SINGLE.test(xml)) {
+    return undefined;
+  }
+  return xml.replace(TFM_SINGLE, `<TargetFramework>${tfm}</TargetFramework>`);
+}
+
+// `<Sdk Name="Aspire.AppHost.Sdk" Version="9.0.0" />` — attribute order-independent, mirroring the
+// PackageReference matchers above (Name may precede or follow Version).
+function aspireSdkVersionRegex(): RegExp {
+  return /(<Sdk\b[^>]*\bName\s*=\s*"Aspire\.AppHost\.Sdk"[^>]*\bVersion\s*=\s*")[^"]*(")/i;
+}
+function aspireSdkVersionRegexVersionFirst(): RegExp {
+  return /(<Sdk\b[^>]*\bVersion\s*=\s*")[^"]*("[^>]*\bName\s*=\s*"Aspire\.AppHost\.Sdk")/i;
+}
+
+/** Read the `Aspire.AppHost.Sdk` version from an AppHost .csproj, or undefined when not declared. */
+export function csprojReadAspireSdkVersion(xml: string): string | undefined {
+  const forward = /<Sdk\b[^>]*\bName\s*=\s*"Aspire\.AppHost\.Sdk"[^>]*\bVersion\s*=\s*"([^"]*)"/i.exec(xml);
+  if (forward) {
+    return forward[1];
+  }
+  const reversed = /<Sdk\b[^>]*\bVersion\s*=\s*"([^"]*)"[^>]*\bName\s*=\s*"Aspire\.AppHost\.Sdk"/i.exec(xml);
+  return reversed ? reversed[1] : undefined;
+}
+
+/** Rewrite the `Aspire.AppHost.Sdk` version. Returns undefined when the SDK isn't declared here. */
+export function csprojUpdateAspireSdkVersion(xml: string, version: string): string | undefined {
+  const forward = aspireSdkVersionRegex();
+  if (forward.test(xml)) {
+    return xml.replace(forward, `$1${version}$2`);
+  }
+  const reversed = aspireSdkVersionRegexVersionFirst();
+  if (reversed.test(xml)) {
+    return xml.replace(reversed, `$1${version}$2`);
+  }
+  return undefined;
+}
+
 export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

@@ -52,6 +52,15 @@ at once.
   skipped. Direct dependencies start checked in the confirmation list, while transitive pins are
   opt-in (unchecked) — so a routine "update to latest" bumps your directs without pinning the whole
   transitive tree unless you ask it to.
+- 🚀 **Bump .NET & Aspire** — upgrade a whole .NET Aspire solution in one pass. Pick a single target
+  Aspire version and it's applied to the `Aspire.AppHost.Sdk` **and** every first-party `Aspire.*`
+  package across your chosen scope (they ship in lockstep, so they move together), and — optionally,
+  in the same flow — bump the .NET `<TargetFramework>` too. Every package, the SDK, and each
+  framework edit is shown in a confirmation list before anything is written; an Aspire package the
+  feed doesn't publish at the chosen version is left alone and reported. Honors Central Package
+  Management and a `<TargetFramework>` centralized in `Directory.Build.props`.
+- 🎯 **Bump .NET on its own** — a standalone *Bump .NET Version…* command changes just the
+  `<TargetFramework>` across a chosen set of projects, for plain .NET solutions with no Aspire.
 - ⭐ **Prefer-latest list** — flag packages that should favour the newest version during the two
   bulk operations (right-click a dependency → *Prefer Latest Version*; the menu toggles to *Remove
   from Prefer-Latest List* once it's flagged — or edit the
@@ -99,6 +108,10 @@ at once.
    vulnerability badge if it has one — expand what you want to dig into.
 3. Click the 🛡️ **Fix All Vulnerabilities** button in the view title to clean up everything at
    once, or use the ↑ / 📌 icons on an individual package.
+4. Working in a .NET Aspire solution? Use the 🚀 **Bump .NET & Aspire Versions…** button (view title,
+   or right-click a NuGet project) to move the Aspire SDK, every `Aspire.*` package, and — if you
+   like — the target framework in a single reviewed step. For a framework-only change, use **Bump
+   .NET Version…**.
 
 ## How it reads the tree
 
@@ -190,12 +203,13 @@ then install it via *Extensions: Install from VSIX…*.
 - [`src/services/osvService.ts`](src/services/osvService.ts) — batched OSV.dev vulnerability queries (cached per session)
 - [`src/services/registryService.ts`](src/services/registryService.ts) — version lists, feed-aware
 - [`src/services/feedConfig.ts`](src/services/feedConfig.ts) — `.npmrc` / `NuGet.config` parsing and resolution
-- [`src/services/manifestEditor.ts`](src/services/manifestEditor.ts) — pure text edits for `package.json`, `.csproj`, `Directory.Packages.props`
+- [`src/services/manifestEditor.ts`](src/services/manifestEditor.ts) — pure text edits for `package.json`, `.csproj`, `Directory.Packages.props` (package versions, `<TargetFramework>`, `Aspire.AppHost.Sdk`)
+- [`src/services/aspire.ts`](src/services/aspire.ts) — first-party Aspire package detection + target-framework option list
 - [`src/services/previewService.ts`](src/services/previewService.ts) — fetches a version's declared dependencies and diffs current vs target
 - [`src/services/fixPlanner.ts`](src/services/fixPlanner.ts) — nearest-safe-version resolution for bulk fixes
 - [`src/services/packageMatch.ts`](src/services/packageMatch.ts) — case-insensitive, wildcard package-name matching for the prefer-latest list
 - [`src/ui/previewPanel.ts`](src/ui/previewPanel.ts) — webview showing the transitive-dependency impact, with Apply / Cancel
-- [`src/commands.ts`](src/commands.ts) — update/override/bulk-fix commands, preview + confirm, cross-project scope picker, install prompt
+- [`src/commands.ts`](src/commands.ts) — update/override/bulk-fix commands, .NET & Aspire version bump, preview + confirm, cross-project scope picker, install prompt
 
 </details>
 
