@@ -491,9 +491,15 @@ async function fixAllVulnerabilities(
     unfixable.length > 0
       ? ` — ${unfixable.length} package(s) with no safe version will be skipped`
       : '';
+  const alwaysLatest = alwaysLatestPatterns();
   const chosen = await confirmSelection(
     fixable,
-    `Apply ${fixable.length} vulnerability fix${fixable.length === 1 ? '' : 'es'}${skippedSuffix}`
+    `Apply ${fixable.length} vulnerability fix${fixable.length === 1 ? '' : 'es'}${skippedSuffix}`,
+    // Pre-check only direct dependencies (plus any prefer-latest package the user explicitly
+    // flagged). Transitive fixes are pins/overrides on sub-dependencies, which are far more
+    // invasive, so they start unchecked — the user can still opt in per package.
+    (item) => item.isDirect || matchesAnyPattern(item.name, alwaysLatest),
+    (item) => (matchesAnyPattern(item.name, alwaysLatest) ? '★ prefer-latest' : undefined)
   );
   if (!chosen || chosen.length === 0) {
     return;

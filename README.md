@@ -50,9 +50,11 @@ at once.
   this transitive package?" without hunting through an expanded tree. Works across npm, pnpm and
   NuGet.
 - 🔧 **Fix All Vulnerabilities** — one command, three scopes: a single project, a chosen subset, or
-  your whole workspace. Bumps every vulnerable package to the nearest non-vulnerable version:
-  direct dependencies are updated, transitive ones are pinned. Re-run it after install to mop up
-  anything a resolver needs a second pass on.
+  your whole workspace. Bumps every vulnerable package to the nearest non-vulnerable version: direct
+  dependencies are updated, transitive ones are pinned. Direct dependencies start checked in the
+  confirmation list, while transitive pins are opt-in (unchecked) — so a routine fix updates your
+  main dependencies without pinning sub-dependencies unless you ask it to. Re-run it after install to
+  mop up anything a resolver needs a second pass on.
 - ⬆️ **Update All Packages to Latest** — same three scopes, but for *every* package rather than just
   the vulnerable ones. Each is bumped to its latest published version; anything already current is
   skipped. Direct dependencies start checked in the confirmation list, while transitive pins are
