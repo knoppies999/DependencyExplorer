@@ -29,11 +29,11 @@ at once.
 - **Fix it without leaving the tree.** Update or pin a version and the manifest is edited for you —
   correctly, for your package manager and versioning scheme (npm ranges, pnpm overrides, NuGet CPM).
   Preview the blast radius first; nothing is written until you click Apply.
-- **Fix *everything* at once.** One command finds every vulnerable package across a single project,
-  a chosen subset, or your entire workspace, and bumps each to the nearest safe version.
-- **Or just get current.** A second command bumps *every* package — not only the vulnerable ones —
-  to its latest published version, and you can flag the packages you always want on latest so they
-  jump there on any upgrade.
+- **Fix *everything* at once.** One command finds every vulnerable direct dependency across a single
+  project, a chosen subset, or your entire workspace, and bumps each to the nearest safe version.
+- **Or just get current.** A second command bumps every direct dependency — not only the vulnerable
+  ones — to its latest published version, and you can flag the packages you always want on latest so
+  they jump there on any upgrade.
 
 ## ✨ Features
 
@@ -50,14 +50,16 @@ at once.
   this transitive package?" without hunting through an expanded tree. Works across npm, pnpm and
   NuGet.
 - 🔧 **Fix All Vulnerabilities** — one command, three scopes: a single project, a chosen subset, or
-  your whole workspace. Bumps every vulnerable package to the nearest non-vulnerable version:
-  direct dependencies are updated, transitive ones are pinned. Re-run it after install to mop up
-  anything a resolver needs a second pass on.
-- ⬆️ **Update All Packages to Latest** — same three scopes, but for *every* package rather than just
-  the vulnerable ones. Each is bumped to its latest published version; anything already current is
-  skipped. Direct dependencies start checked in the confirmation list, while transitive pins are
-  opt-in (unchecked) — so a routine "update to latest" bumps your directs without pinning the whole
-  transitive tree unless you ask it to.
+  your whole workspace. Bumps every vulnerable **direct** dependency to the nearest non-vulnerable
+  version. Sub-dependencies are skipped so the run stays fast — it never fetches versions for the
+  whole transitive tree — and any vulnerable ones it skips are reported by name. To fix a specific
+  transitive, pin it via its right-click *Override / Pin Version…*, or add it to the prefer-latest
+  list to include it here. Re-run after install to mop up anything a resolver needs a second pass on.
+- ⬆️ **Update All Packages to Latest** — same three scopes, but for *every* direct package rather
+  than just the vulnerable ones. Each is bumped to its latest published version; anything already
+  current is skipped. Sub-dependencies are skipped so a routine "update to latest" stays fast and
+  never pins the whole transitive tree — update one on demand via its right-click *Override / Pin
+  Version…*, or add it to the prefer-latest list to include it here.
 - 🚀 **Bump .NET & Aspire** — upgrade a whole .NET Aspire solution in one pass. Pick a single target
   Aspire version and it's applied to the `Aspire.AppHost.Sdk` **and** every first-party `Aspire.*`
   package across your chosen scope (they ship in lockstep, so they move together), and — optionally,
@@ -71,12 +73,13 @@ at once.
   bulk operations (right-click a dependency → *Prefer Latest Version*; the menu toggles to *Remove
   from Prefer-Latest List* once it's flagged — or edit the
   `dependencyExplorer.alwaysLatestPackages` setting, which supports `*` wildcards like `@myorg/*`).
-  In **Fix All Vulnerabilities** a flagged package targets its *latest* version instead of the
-  smallest safe bump — but only when that latest version is itself non-vulnerable; otherwise it
-  quietly falls back to the nearest safe version, so it never lands on a known-vulnerable one. In
-  **Update All Packages to Latest** (where everything already targets latest) it simply starts
-  *pre-checked* and tagged `★ prefer-latest` — handy for transitive pins, which are otherwise
-  opt-in. It has no effect when you update a single package by hand.
+  Flagging also **opts a sub-dependency back into the bulk runs**, which otherwise skip transitive
+  packages entirely — so it's how you keep a specific transitive on latest without giving up the
+  speed of skipping the rest. In **Fix All Vulnerabilities** a flagged package targets its *latest*
+  version instead of the smallest safe bump — but only when that latest version is itself
+  non-vulnerable; otherwise it quietly falls back to the nearest safe version, so it never lands on a
+  known-vulnerable one. In **Update All Packages to Latest** it's tagged `★ prefer-latest` in the
+  confirmation list. It has no effect when you update a single package by hand.
 - 🚫 **Never-update list** — the opposite of prefer-latest: flag packages to **hold back from both
   bulk operations** (right-click a dependency → *Never Update This Package*; the menu toggles to
   *Remove from Never-Update List* once it's flagged — or edit the
@@ -184,8 +187,10 @@ sign in, then refresh.
 - npm workspaces: packages inside a monorepo without their own `package-lock.json` show a "run npm
   install" hint; open the workspace root (where the lock lives) to see the full graph.
 - NuGet multi-targeted projects show the first target framework's graph.
-- "Fix All Vulnerabilities" doesn't re-resolve the tree, so a transitive fix is a pin rather than a
-  smarter upstream bump — it's safe to re-run after installing.
+- The bulk commands ("Fix All Vulnerabilities", "Update All Packages to Latest") only act on direct
+  dependencies, so they stay fast on large trees. Fix a sub-dependency via its right-click *Override
+  / Pin Version…*, or add it to the prefer-latest list to include it in the bulk runs (where it's a
+  pin rather than a smarter upstream bump — safe to re-run after installing).
 - Vulnerability severity levels aren't fetched (only advisory IDs, linked to osv.dev); circular
   references are shown once and marked *circular*.
 

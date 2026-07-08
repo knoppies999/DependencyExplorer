@@ -2,6 +2,18 @@
 
 All notable changes to the **Dependency Explorer** extension are documented here.
 
+## 1.6.1 — 2026-07-08
+
+### Changed
+
+- **Bulk operations skip sub-dependencies for speed** — **Fix All Vulnerabilities** and **Update All
+  Packages to Latest** now only consider **direct** dependencies, so they no longer fetch versions
+  for the (often far larger) transitive set and complete much faster. A routine pass updates your
+  main dependencies without touching sub-dependencies. To act on a specific sub-dependency, right-
+  click it → **Override / Pin Version…** (which resolves just that one on demand), or add it to the
+  prefer-latest list to opt it back into the bulk runs. Skipped transitive packages are reported —
+  by name for a vulnerability fix, so you know which still need pinning.
+
 ## 1.6.0 — 2026-07-08
 
 ### Added
