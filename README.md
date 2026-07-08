@@ -201,11 +201,13 @@ sign in, then refresh.
 
 ```bash
 npm install
-npm run compile   # or: npm run watch
+npm run bundle:watch   # esbuild bundle → dist/, rebuilt on save (with sourcemaps)
 ```
 
 Press **F5** in VS Code to launch an Extension Development Host, then open any folder containing
-an npm, pnpm or .NET project.
+an npm, pnpm or .NET project. The extension entry point is the bundled `dist/extension.js`, so a
+bundle has to exist before F5 — `bundle:watch` keeps it current. (`npm run compile` still builds the
+unbundled `out/` used by `npm test`, and `npm run check-types` type-checks without emitting.)
 
 To package a `.vsix` for local installation:
 
@@ -213,7 +215,8 @@ To package a `.vsix` for local installation:
 npx @vscode/vsce package
 ```
 
-then install it via *Extensions: Install from VSIX…*.
+The `vscode:prepublish` step type-checks and produces the minified bundle automatically. Then install
+it via *Extensions: Install from VSIX…*.
 
 ### Project layout
 

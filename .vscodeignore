@@ -2,10 +2,14 @@
 .claude/**
 src/**
 test/**
+out/**
+node_modules/**
 tsconfig.json
 **/*.map
 **/*.ts
 .gitignore
+.vscodeignore
+**/*.vsix
 CLAUDE.md
 ARCHITECTURE.md
 media/hero-banner.svg
