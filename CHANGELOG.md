@@ -6,12 +6,13 @@ All notable changes to the **Dependency Explorer** extension are documented here
 
 ### Changed
 
-- **Fix All Vulnerabilities now pre-checks only direct dependencies** — transitive fixes (pins /
-  overrides on sub-dependencies) start **unchecked** in the confirmation list, matching how **Update
-  All Packages to Latest** already behaves. A routine "fix everything" pass updates your main
-  dependencies without pinning sub-dependencies unless you opt in — every transitive fix is still
-  listed (tagged `· pin`), so you can tick any you want. A package you've flagged **prefer-latest**
-  still starts checked even when it's transitive, since that's an explicit "always update this" signal.
+- **Bulk operations skip sub-dependencies for speed** — **Fix All Vulnerabilities** and **Update All
+  Packages to Latest** now only consider **direct** dependencies, so they no longer fetch versions
+  for the (often far larger) transitive set and complete much faster. A routine pass updates your
+  main dependencies without touching sub-dependencies. To act on a specific sub-dependency, right-
+  click it → **Override / Pin Version…** (which resolves just that one on demand), or add it to the
+  prefer-latest list to opt it back into the bulk runs. Skipped transitive packages are reported —
+  by name for a vulnerability fix, so you know which still need pinning.
 
 ## 1.6.0 — 2026-07-08
 

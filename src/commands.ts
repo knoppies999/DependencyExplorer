@@ -180,6 +180,34 @@ function reportHeld(held: string[]): void {
   );
 }
 
+/**
+ * Tell the user which transitive (sub-)dependencies a bulk run skipped. Bulk operations only touch
+ * direct dependencies (plus any prefer-latest package) so they stay fast — a sub-dependency is acted
+ * on via its right-click Override / Pin Version…, or by adding it to the prefer-latest list. A
+ * vulnerability fix names the skipped packages (unfixed CVEs matter); an update just counts them.
+ */
+function reportSkippedTransitive(names: string[], kind: 'fix' | 'update'): void {
+  if (names.length === 0) {
+    return;
+  }
+  const count = names.length;
+  const noun = `sub-dependenc${count === 1 ? 'y' : 'ies'}`;
+  if (kind === 'fix') {
+    const shown = names.slice(0, 8).join(', ');
+    const more = count > 8 ? `, +${count - 8} more` : '';
+    vscode.window.showWarningMessage(
+      `Skipped ${count} vulnerable ${noun} (${shown}${more}) — bulk fix only updates direct ` +
+        `dependencies. Pin one via its right-click “Override / Pin Version…”, or add it to the ` +
+        `prefer-latest list to fix it here.`
+    );
+  } else {
+    vscode.window.showInformationMessage(
+      `Skipped ${count} ${noun} — bulk update only touches direct dependencies. Update one via its ` +
+        `right-click “Override / Pin Version…”, or add it to the prefer-latest list to include it here.`
+    );
+  }
+}
+
 /** Where flag-list edits are written: the workspace when one is open, otherwise the user profile. */
 function flagConfigTarget(): vscode.ConfigurationTarget {
   return vscode.workspace.workspaceFolders?.length
@@ -461,11 +489,16 @@ async function fixAllVulnerabilities(
     return;
   }
 
-  const { items, unresolved, held } = await vscode.window.withProgress(
+  const { items, unresolved, held, skippedTransitive } = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Finding vulnerability fixes…' },
     () => buildFixPlan(tree, scope)
   );
-  if (items.length === 0 && unresolved.length === 0 && held.length === 0) {
+  if (
+    items.length === 0 &&
+    unresolved.length === 0 &&
+    held.length === 0 &&
+    skippedTransitive.length === 0
+  ) {
     vscode.window.showInformationMessage(
       `Dependency Explorer: no known vulnerabilities in ${scopeLabel(scope)}.`
     );
@@ -473,6 +506,7 @@ async function fixAllVulnerabilities(
   }
 
   reportHeld(held);
+  reportSkippedTransitive(skippedTransitive, 'fix');
   const manual = await promptManualVersions(unresolved);
   const fixable = [...items.filter((p) => p.targetVersion), ...manual];
   const unfixable = items.filter((p) => !p.targetVersion);
@@ -495,10 +529,9 @@ async function fixAllVulnerabilities(
   const chosen = await confirmSelection(
     fixable,
     `Apply ${fixable.length} vulnerability fix${fixable.length === 1 ? '' : 'es'}${skippedSuffix}`,
-    // Pre-check only direct dependencies (plus any prefer-latest package the user explicitly
-    // flagged). Transitive fixes are pins/overrides on sub-dependencies, which are far more
-    // invasive, so they start unchecked — the user can still opt in per package.
-    (item) => item.isDirect || matchesAnyPattern(item.name, alwaysLatest),
+    // The plan only contains direct dependencies plus any prefer-latest sub-dependency the user
+    // opted in, so every row starts checked; the tag marks the opted-in transitives.
+    () => true,
     (item) => (matchesAnyPattern(item.name, alwaysLatest) ? '★ prefer-latest' : undefined)
   );
   if (!chosen || chosen.length === 0) {
@@ -528,11 +561,16 @@ async function updateAllToLatest(tree: DependencyTreeProvider, project?: Project
     return;
   }
 
-  const { items, unresolved, held } = await vscode.window.withProgress(
+  const { items, unresolved, held, skippedTransitive } = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Finding latest versions…' },
     () => buildUpdatePlan(tree, scope)
   );
-  if (items.length === 0 && unresolved.length === 0 && held.length === 0) {
+  if (
+    items.length === 0 &&
+    unresolved.length === 0 &&
+    held.length === 0 &&
+    skippedTransitive.length === 0
+  ) {
     vscode.window.showInformationMessage(
       `Dependency Explorer: every package in ${scopeLabel(scope)} is already at its latest version.`
     );
@@ -540,6 +578,7 @@ async function updateAllToLatest(tree: DependencyTreeProvider, project?: Project
   }
 
   reportHeld(held);
+  reportSkippedTransitive(skippedTransitive, 'update');
   const manual = await promptManualVersions(unresolved);
   const plan = [...items, ...manual];
   if (plan.length === 0) {
@@ -1205,11 +1244,12 @@ async function promptManualVersions(unresolved: UnresolvedPackage[]): Promise<Fi
 async function buildFixPlan(
   tree: DependencyTreeProvider,
   scope: Project[]
-): Promise<{ items: FixPlanItem[]; unresolved: UnresolvedPackage[]; held: string[] }> {
+): Promise<{ items: FixPlanItem[]; unresolved: UnresolvedPackage[]; held: string[]; skippedTransitive: string[] }> {
   const alwaysLatest = alwaysLatestPatterns();
   const pending: (FixPlanItem & { versions: string[]; latest?: string; wantLatest: boolean })[] = [];
   const unresolved: UnresolvedPackage[] = [];
   const held = new Set<string>();
+  const skippedTransitive = new Set<string>();
 
   // Flatten to a work list first (holding back never-update packages), then resolve the version
   // lists in parallel — these registry round-trips dominate the plan, so serializing them is what
@@ -1220,6 +1260,11 @@ async function buildFixPlan(
       if (isNeverUpdate(vuln.name)) {
         // On the never-update list: leave it untouched even though it's vulnerable.
         held.add(vuln.name);
+      } else if (!vuln.isDirect && !matchesAnyPattern(vuln.name, alwaysLatest)) {
+        // Transitive (sub-)dependency: skipped by default so we never fetch versions for the (often
+        // far larger) transitive set — that's what keeps the bulk run fast. Pin a specific one via
+        // its right-click Override/Pin, or add it to the prefer-latest list to opt it back in here.
+        skippedTransitive.add(vuln.name);
       } else {
         jobs.push({ project, vuln });
       }
@@ -1292,7 +1337,12 @@ async function buildFixPlan(
       ),
     };
   });
-  return { items, unresolved, held: [...held].sort((a, b) => a.localeCompare(b)) };
+  return {
+    items,
+    unresolved,
+    held: [...held].sort((a, b) => a.localeCompare(b)),
+    skippedTransitive: [...skippedTransitive].sort((a, b) => a.localeCompare(b)),
+  };
 }
 
 /**
@@ -1303,10 +1353,12 @@ async function buildFixPlan(
 async function buildUpdatePlan(
   tree: DependencyTreeProvider,
   scope: Project[]
-): Promise<{ items: FixPlanItem[]; unresolved: UnresolvedPackage[]; held: string[] }> {
+): Promise<{ items: FixPlanItem[]; unresolved: UnresolvedPackage[]; held: string[]; skippedTransitive: string[] }> {
+  const alwaysLatest = alwaysLatestPatterns();
   const items: FixPlanItem[] = [];
   const unresolved: UnresolvedPackage[] = [];
   const held = new Set<string>();
+  const skippedTransitive = new Set<string>();
 
   // Flatten first (holding back never-update packages), then resolve latest versions in parallel;
   // serial lookups are the main reason a large "update all" stalls, and one unreachable feed
@@ -1316,6 +1368,11 @@ async function buildUpdatePlan(
     for (const pkg of tree.getAllDistinctPackages(project)) {
       if (isNeverUpdate(pkg.name)) {
         held.add(pkg.name);
+      } else if (!pkg.isDirect && !matchesAnyPattern(pkg.name, alwaysLatest)) {
+        // Transitive (sub-)dependency: skipped so we don't fetch a latest version for every package
+        // in the transitive tree — which is what keeps "update all" fast. Update one on demand via
+        // its right-click Override/Pin, or add it to the prefer-latest list to opt it back in here.
+        skippedTransitive.add(pkg.name);
       } else {
         jobs.push({ project, pkg });
       }
@@ -1356,7 +1413,12 @@ async function buildUpdatePlan(
       targetVersion: latest,
     });
   }
-  return { items, unresolved, held: [...held].sort((a, b) => a.localeCompare(b)) };
+  return {
+    items,
+    unresolved,
+    held: [...held].sort((a, b) => a.localeCompare(b)),
+    skippedTransitive: [...skippedTransitive].sort((a, b) => a.localeCompare(b)),
+  };
 }
 
 /**
