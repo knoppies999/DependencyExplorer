@@ -231,7 +231,7 @@ parsers, vulnerability-closure and "why is this here?" reachability, the nearest
 planner, feed/credential resolution) lives in deliberately `vscode`-free modules, and the tests load
 their compiled `out/**` output directly. `commands.ts` imports `vscode`, so the handful of tests that
 cover its internals assert against the compiled source instead. Every push and pull request runs the
-suite on Node 20 and 22 via [GitHub Actions](.github/workflows/ci.yml).
+suite on Node 22 and 24 via [GitHub Actions](.github/workflows/ci.yml).
 
 ### Project layout
 

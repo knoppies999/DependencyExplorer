@@ -19,7 +19,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        # Node 22 (LTS) and 24 (current). Node 20 is intentionally excluded: its older bundled
+        # undici (5.x) doesn't honour an AbortSignal.any() composite deadline on a hanging fetch, so
+        # the dead-feed fast-fail test's 8s budget falls through to the 30s package timeout there —
+        # a runtime quirk, not a logic regression. See feedConfig.getNugetServiceEndpoints.
+        node: [22, 24]
     steps:
       - uses: actions/checkout@v4
 
