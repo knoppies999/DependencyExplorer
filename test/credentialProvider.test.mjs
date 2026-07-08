@@ -59,6 +59,10 @@ test('resolvePlugin honors NUGET_PLUGIN_PATHS as a file or a directory', () => {
 });
 
 // ------------------------- end-to-end with a stub provider -----------------
+// The stub provider is a `#!/usr/bin/env node` script executed directly, which relies on a POSIX
+// shebang. Windows doesn't honour shebangs, so these two cases are skipped there (CI runs on Linux,
+// where the full path is exercised). The unit tests above still run on every platform.
+const posixOnly = process.platform === 'win32' ? { skip: 'stub provider needs a POSIX shebang' } : {};
 const PAT = 'session-token-xyz';
 let PORT, tmp, stubPath, countFile;
 const hits = {};
@@ -113,7 +117,7 @@ function azureProjectDir(name) {
   return dir;
 }
 
-test('authenticates an Azure feed via the credential provider (no creds in NuGet.config)', async () => {
+test('authenticates an Azure feed via the credential provider (no creds in NuGet.config)', posixOnly, async () => {
   const saved = { paths: process.env.NUGET_PLUGIN_PATHS, pat: process.env.STUB_PAT, cf: process.env.STUB_COUNT_FILE };
   process.env.NUGET_PLUGIN_PATHS = stubPath;
   process.env.STUB_PAT = PAT;
@@ -135,7 +139,7 @@ test('authenticates an Azure feed via the credential provider (no creds in NuGet
   }
 });
 
-test('a not-signed-in provider surfaces a clear auth error', async () => {
+test('a not-signed-in provider surfaces a clear auth error', posixOnly, async () => {
   const saved = { paths: process.env.NUGET_PLUGIN_PATHS, cf: process.env.STUB_COUNT_FILE };
   process.env.NUGET_PLUGIN_PATHS = stubPath;
   process.env.STUB_COUNT_FILE = countFile;

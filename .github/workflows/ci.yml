@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (e.g. a force-push to a PR branch).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node }})
+    # Ubuntu on purpose: the credential-provider e2e test drives a stub provider via a POSIX shebang,
+    # which Windows can't execute (those cases self-skip on win32).
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node 22 (LTS) and 24 (current). Node 20 is intentionally excluded: its older bundled
+        # undici (5.x) doesn't honour an AbortSignal.any() composite deadline on a hanging fetch, so
+        # the dead-feed fast-fail test's 8s budget falls through to the 30s package timeout there —
+        # a runtime quirk, not a logic regression. See feedConfig.getNugetServiceEndpoints.
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run check-types
+
+      - name: Run tests
+        run: npm test
+
+      - name: Verify the extension bundles
+        run: npm run bundle
