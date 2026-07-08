@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { BumpPreview, ChangeStatus, DepChange } from '../services/previewService';
+import { BumpRisk, riskLabel } from '../services/semverRisk';
 import { Ecosystem } from '../types';
 
 export interface BumpPreviewOptions {
@@ -11,6 +12,10 @@ export interface BumpPreviewOptions {
   preview: BumpPreview;
   /** How many projects the change will apply to (for the informational note). */
   projectCount: number;
+  /** Semver distance of the bump, for the risk badge. */
+  risk?: BumpRisk;
+  /** Deprecation message when the target version is deprecated, '' when deprecated without a message. */
+  deprecatedMessage?: string;
 }
 
 /**
@@ -91,6 +96,17 @@ function renderHtml(webview: vscode.Webview, opts: BumpPreviewOptions): string {
           .join('');
 
   const kind = opts.isDirect ? 'Update' : 'Override';
+  const riskText = opts.risk ? riskLabel(opts.risk) : '';
+  const riskBanner =
+    opts.risk === 'major'
+      ? `<p class="note warn">⚠️ This is a <b>major</b> version bump — it may include breaking changes. Check the changelog before applying.</p>`
+      : riskText
+        ? `<p class="note">Version change: <b>${escapeHtml(riskText)}</b>.</p>`
+        : '';
+  const deprecationBanner =
+    opts.deprecatedMessage !== undefined
+      ? `<p class="note warn">⛔ The target version <code>${escapeHtml(opts.targetVersion)}</code> is <b>deprecated</b>${opts.deprecatedMessage ? `: ${escapeHtml(opts.deprecatedMessage)}` : '.'}</p>`
+      : '';
   const projectNote =
     opts.projectCount > 1
       ? `<p class="note">This package is used by <b>${opts.projectCount}</b> projects — you'll choose whether to apply to all of them after confirming.</p>`
@@ -150,6 +166,8 @@ function renderHtml(webview: vscode.Webview, opts: BumpPreviewOptions): string {
 <body>
   <h1>${kind} ${escapeHtml(opts.name)}</h1>
   <p class="sub"><span class="ver">${escapeHtml(opts.currentVersion)}</span><span class="arrow">→</span><span class="ver">${escapeHtml(opts.targetVersion)}</span> · ${opts.ecosystem} · ${opts.isDirect ? 'direct dependency' : 'transitive override'}</p>
+  ${riskBanner}
+  ${deprecationBanner}
 
   <p class="sub">How this version's declared dependencies compare to your current version:</p>
   <div class="chips">${summaryChips || '<span class="muted">no dependencies</span>'}</div>

@@ -73,6 +73,19 @@ export interface DependencyNode {
 
 export type TreeNode = ProjectNode | MessageNode | DependencyNode;
 
+/**
+ * Provider-agnostic view of a project's resolved dependency graph, used for reverse-dependency
+ * ("why is this here?") walks without exposing lockfile-specific internals.
+ */
+export interface GraphAccess {
+  /** Direct dependencies that resolved to a graph node. */
+  roots: { key: string; isDev: boolean }[];
+  entry(key: string): { name: string; version: string } | undefined;
+  /** Resolved child keys only (unresolved/missing edges are omitted). */
+  childKeys(key: string): string[];
+  keys(): string[];
+}
+
 export interface DependencyProvider {
   readonly ecosystem: Ecosystem;
   /** Find and parse all projects of this ecosystem in the workspace. */
@@ -87,4 +100,6 @@ export interface DependencyProvider {
   getTargetFramework?(project: Project): string | undefined;
   /** Recompute which subtrees contain a vulnerable package (call after OSV results arrive). */
   applyVulnerabilities(project: Project): void;
+  /** Resolved-graph access for reverse-dependency ("why is this here?") walks. */
+  getGraph?(project: Project): GraphAccess | undefined;
 }

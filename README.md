@@ -43,6 +43,12 @@ at once.
   vulnerable (advisory IDs linked in the tooltip); yellow = something deeper in the subtree is.
   Vulnerable projects are badged right in the tree so you know where to look before you even expand
   anything.
+- 🔎 **"Why Is This Here?"** — right-click any dependency (direct or transitive) to see every chain
+  from your project's direct dependencies down to that package. Shortest chains first (the most
+  actionable — update the *first* link to move the package), dev-only chains tagged, and a warning
+  when a package resolves to more than one version. Answers "which of my dependencies dragged in
+  this transitive package?" without hunting through an expanded tree. Works across npm, pnpm and
+  NuGet.
 - 🔧 **Fix All Vulnerabilities** — one command, three scopes: a single project, a chosen subset, or
   your whole workspace. Bumps every vulnerable package to the nearest non-vulnerable version:
   direct dependencies are updated, transitive ones are pinned. Re-run it after install to mop up
@@ -89,6 +95,18 @@ at once.
 - 👀 **Preview before you apply.** Every version change opens a diff of what that version's *own*
   dependencies look like versus your current one — added, removed, changed — pulled live from the
   registry, before anything touches disk.
+- 🧭 **Know what an update means before you take it.** Every update prompt is annotated so you can
+  decide without leaving the editor:
+  - **Semver risk badges** — each bump is tagged `⚠ major` / `minor` / `patch` / `pre-release` in the
+    bulk checklists, the version picker, and the preview panel. In **Update All Packages to Latest**,
+    major (potentially breaking) bumps start **unchecked** unless the package is on your prefer-latest
+    list, so a routine "update everything" never silently opts you into breaking changes.
+  - **Deprecation flags** — a version the registry marks deprecated is shown with a `⛔` marker in the
+    tree, picker and preview (with the registry's deprecation message). Covers npm's per-version
+    `deprecated` field and NuGet's registration `deprecation` metadata.
+  - **Changelog / release-notes links** — a dependency's tooltip links to its repository, changelog /
+    releases page, homepage and registry page, plus a "latest published" hint with its own risk badge.
+    Best-effort and cached; a feed that doesn't expose the metadata simply shows less.
 - 🔁 **Bump a shared package everywhere it's used**, in one action — across all projects, a chosen
   few, or just the one you're looking at.
 - 🔒 **Private feeds just work.** Version lookups and previews respect your project's own `.npmrc`
@@ -203,12 +221,16 @@ then install it via *Extensions: Install from VSIX…*.
 - [`src/services/osvService.ts`](src/services/osvService.ts) — batched OSV.dev vulnerability queries (cached per session)
 - [`src/services/registryService.ts`](src/services/registryService.ts) — version lists, feed-aware
 - [`src/services/feedConfig.ts`](src/services/feedConfig.ts) — `.npmrc` / `NuGet.config` parsing and resolution
+- [`src/services/metadataService.ts`](src/services/metadataService.ts) — best-effort package metadata (deprecation flags, repository / changelog links), cached per session
+- [`src/services/semverRisk.ts`](src/services/semverRisk.ts) — major/minor/patch bump classification for the risk badges
+- [`src/services/whyService.ts`](src/services/whyService.ts) — reverse-dependency ("why is this here?") path enumeration over a provider-agnostic graph
 - [`src/services/manifestEditor.ts`](src/services/manifestEditor.ts) — pure text edits for `package.json`, `.csproj`, `Directory.Packages.props` (package versions, `<TargetFramework>`, `Aspire.AppHost.Sdk`)
 - [`src/services/aspire.ts`](src/services/aspire.ts) — first-party Aspire package detection + target-framework option list
 - [`src/services/previewService.ts`](src/services/previewService.ts) — fetches a version's declared dependencies and diffs current vs target
 - [`src/services/fixPlanner.ts`](src/services/fixPlanner.ts) — nearest-safe-version resolution for bulk fixes
 - [`src/services/packageMatch.ts`](src/services/packageMatch.ts) — case-insensitive, wildcard package-name matching for the prefer-latest list
 - [`src/ui/previewPanel.ts`](src/ui/previewPanel.ts) — webview showing the transitive-dependency impact, with Apply / Cancel
+- [`src/ui/whyPanel.ts`](src/ui/whyPanel.ts) — webview listing every dependency chain that pulls a package into a project
 - [`src/commands.ts`](src/commands.ts) — update/override/bulk-fix commands, .NET & Aspire version bump, preview + confirm, cross-project scope picker, install prompt
 
 </details>

@@ -2,7 +2,7 @@
   "name": "dependency-explorer",
   "displayName": "Dependency Explorer",
   "description": "Full dependency tree (including transitive dependencies) for npm, pnpm and NuGet projects, with vulnerability flags and one-click update, transitive override, or bulk fix.",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "publisher": "RuanduPlessis",
   "license": "MIT",
   "repository": {
@@ -178,6 +178,12 @@
         "icon": "$(pin)"
       },
       {
+        "command": "dependencyExplorer.whyDependency",
+        "title": "Why Is This Here?",
+        "category": "Dependency Explorer",
+        "icon": "$(type-hierarchy)"
+      },
+      {
         "command": "dependencyExplorer.openManifest",
         "title": "Open Manifest",
         "category": "Dependency Explorer",
@@ -208,6 +214,10 @@
         },
         {
           "command": "dependencyExplorer.openManifest",
+          "when": "false"
+        },
+        {
+          "command": "dependencyExplorer.whyDependency",
           "when": "false"
         },
         {
@@ -307,6 +317,11 @@
           "command": "dependencyExplorer.removeFromAlwaysLatest",
           "when": "view == dependencyExplorer.tree && viewItem =~ /preferLatest/",
           "group": "1_modify@2"
+        },
+        {
+          "command": "dependencyExplorer.whyDependency",
+          "when": "view == dependencyExplorer.tree && viewItem =~ /^dep:(direct|transitive)/",
+          "group": "0_info@1"
         },
         {
           "command": "dependencyExplorer.addToNeverUpdate",

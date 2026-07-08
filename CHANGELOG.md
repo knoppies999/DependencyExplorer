@@ -2,6 +2,44 @@
 
 All notable changes to the **Dependency Explorer** extension are documented here.
 
+## 1.6.0 — 2026-07-08
+
+### Added
+
+- **Update-confidence layer on every update prompt** — the moment you're deciding whether to bump a
+  package, the extension now shows what you need to decide it, without leaving the editor.
+  - **Semver risk badges** — each bump is tagged `⚠ major`, `minor`, `patch`, or `pre-release` from
+    the version distance (major/minor/patch, tolerant of NuGet 4-part versions and prereleases).
+    Badges appear in the **Fix All Vulnerabilities** and **Update All Packages to Latest**
+    checklists, next to every version in the update / override picker, and in the pre-apply preview
+    panel — where a major bump also gets a "may include breaking changes" banner. In **Update All
+    Packages to Latest**, major (potentially breaking) bumps now start **unchecked** unless the
+    package is on your prefer-latest list, so a routine "update everything" pass doesn't silently
+    opt you into breaking changes.
+  - **Deprecation flags** — packages whose resolved version the registry marks deprecated are shown
+    with a `⛔`/circle-slash marker and a `deprecated` tag in the tree, flagged per-version in the
+    picker, and called out (with the registry's deprecation message) in the preview panel. Reads
+    npm's per-version `deprecated` field and NuGet's registration `deprecation` metadata.
+  - **Changelog / release-notes links per package** — a dependency's tooltip now links to its
+    **Repository**, **Changelog / releases** (the GitHub releases page when the repo is hosted
+    there), **Homepage**, and public registry page, plus a "Latest published" hint with its own risk
+    badge. Repository URLs are normalized from the many shapes npm and NuGet declare them in
+    (`git+ssh`, `github:` shorthand, nuspec `<repository>` / `<projectUrl>`, etc.).
+- **"Why Is This Here?" — reverse-dependency view** — right-click any dependency (direct or
+  transitive) to see every chain from your project's direct dependencies down to that package,
+  answering why a transitive package is present. Chains are listed shortest-first (the most
+  actionable), dev-only chains are tagged, and packages that resolve to more than one version in the
+  project are flagged. Works across npm, pnpm and NuGet, walking each provider's resolved graph via
+  reverse-reachability so even large trees enumerate quickly.
+
+### Notes
+
+- The new registry-metadata lookups (deprecation and links) are best-effort and cached per session:
+  they're fetched lazily in the background as tree nodes render — so nothing blocks on the network —
+  and a feed that doesn't expose the metadata simply shows less. Private/authenticated feeds reuse
+  the same `.npmrc` / `NuGet.config` resolution (including the v1.4.0 credential-provider support)
+  as version lookups.
+
 ## 1.5.0 — 2026-07-07
 
 ### Added

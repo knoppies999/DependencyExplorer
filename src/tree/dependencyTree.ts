@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import {
   DependencyNode,
   DependencyProvider,
   DuplicatePackage,
   Ecosystem,
+  GraphAccess,
   PackageLocation,
   Project,
   TreeNode,
@@ -11,6 +13,13 @@ import {
 import { OsvService, packagesToQueries } from '../services/osvService';
 import { compareVersionsDesc } from '../services/registryService';
 import { matchesAnyPattern } from '../services/packageMatch';
+import {
+  fetchPackageMetadata,
+  getCachedMetadata,
+  hasMetadata,
+  PackageMetadata,
+} from '../services/metadataService';
+import { bumpRisk, riskBadge } from '../services/semverRisk';
 
 export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   private _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined>();
@@ -192,6 +201,36 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
     return this.providerFor(project).getTargetFramework?.(project);
   }
 
+  /** Resolved-graph access for reverse-dependency ("why is this here?") walks. */
+  getGraph(project: Project): GraphAccess | undefined {
+    return this.providerFor(project).getGraph?.(project);
+  }
+
+  /* ------------------------- lazy package metadata ------------------------- */
+
+  private metaRefreshTimer: NodeJS.Timeout | undefined;
+
+  /**
+   * Cached registry metadata for a node (deprecation, repo/changelog links). On a cache miss the
+   * fetch is kicked off in the background and the tree re-renders (debounced) when it lands, so
+   * rendering never blocks on the network.
+   */
+  private metadataFor(node: DependencyNode): PackageMetadata | undefined {
+    const ecosystem = node.project.ecosystem;
+    if (hasMetadata(ecosystem, node.name)) {
+      return getCachedMetadata(ecosystem, node.name);
+    }
+    void fetchPackageMetadata(ecosystem, node.name, path.dirname(node.project.manifestPath)).then(
+      (meta) => {
+        if (meta) {
+          clearTimeout(this.metaRefreshTimer);
+          this.metaRefreshTimer = setTimeout(() => this._onDidChangeTreeData.fire(undefined), 400);
+        }
+      }
+    );
+    return undefined;
+  }
+
   /** Every project of the given ecosystem that contains `name`, with how it's used there. */
   locateAcrossProjects(ecosystem: Ecosystem, name: string): PackageLocation[] {
     const result: PackageLocation[] = [];
@@ -324,12 +363,18 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
     // Stable unique id (full path from the project root) so expansion state survives refreshes.
     item.id = `${node.project.manifestPath}|${[...node.ancestorKeys, node.key].join('>')}`;
 
+    const meta = this.metadataFor(node);
+    const isDeprecated = meta?.deprecated.has(node.version) ?? false;
+
     const flags: string[] = [node.version];
     if (node.isDev) {
       flags.push('dev');
     }
     if (node.circular) {
       flags.push('circular');
+    }
+    if (isDeprecated) {
+      flags.push('deprecated');
     }
     if (node.vulns.length > 0) {
       flags.push(`${node.vulns.length} ${node.vulns.length === 1 ? 'vulnerability' : 'vulnerabilities'}`);
@@ -340,6 +385,11 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
       item.iconPath = new vscode.ThemeIcon(
         'warning',
         new vscode.ThemeColor('list.errorForeground')
+      );
+    } else if (isDeprecated) {
+      item.iconPath = new vscode.ThemeIcon(
+        'circle-slash',
+        new vscode.ThemeColor('list.warningForeground')
       );
     } else if (node.subtreeVulnerable) {
       item.iconPath = new vscode.ThemeIcon(
@@ -362,16 +412,23 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
       ctx.push('neverUpdate');
     }
     item.contextValue = ctx.join('.');
-    item.tooltip = this.dependencyTooltip(node);
+    item.tooltip = this.dependencyTooltip(node, meta);
     return item;
   }
 
-  private dependencyTooltip(node: DependencyNode): vscode.MarkdownString {
+  private dependencyTooltip(
+    node: DependencyNode,
+    meta: PackageMetadata | undefined
+  ): vscode.MarkdownString {
     const md = new vscode.MarkdownString();
     md.appendMarkdown(`**${node.name}** \`${node.version}\`\n\n`);
     md.appendMarkdown(
       `${node.isDirect ? 'Direct' : 'Transitive'} ${node.isDev ? 'dev ' : ''}dependency of **${node.project.name}** (${node.project.ecosystem})\n\n`
     );
+    if (meta?.deprecated.has(node.version)) {
+      const message = meta.deprecated.get(node.version);
+      md.appendMarkdown(`⛔ **This version is deprecated**${message ? `: ${message}` : '.'}\n\n`);
+    }
     if (node.vulns.length > 0) {
       md.appendMarkdown(`⚠️ **Known vulnerabilities:**\n\n`);
       for (const v of node.vulns) {
@@ -382,7 +439,32 @@ export class DependencyTreeProvider implements vscode.TreeDataProvider<TreeNode>
       md.appendMarkdown(`⚠️ A transitive dependency in this subtree has known vulnerabilities.\n\n`);
     }
     if (node.circular) {
-      md.appendMarkdown(`↩️ Circular reference — already shown further up this branch.\n`);
+      md.appendMarkdown(`↩️ Circular reference — already shown further up this branch.\n\n`);
+    }
+
+    // "Latest published" hint with a semver-risk badge, when the registry offers something newer.
+    if (meta?.latest && compareVersionsDesc(meta.latest, node.version) < 0) {
+      const badge = riskBadge(bumpRisk(node.version, meta.latest));
+      md.appendMarkdown(`Latest published: \`${meta.latest}\`${badge ? ` (${badge})` : ''}\n\n`);
+    }
+
+    const links: string[] = [];
+    if (meta?.repositoryUrl) {
+      links.push(`[Repository](${meta.repositoryUrl})`);
+    }
+    if (meta?.releaseNotesUrl && meta.releaseNotesUrl !== meta.repositoryUrl) {
+      links.push(`[Changelog / releases](${meta.releaseNotesUrl})`);
+    }
+    if (meta?.homepage && meta.homepage !== meta.repositoryUrl) {
+      links.push(`[Homepage](${meta.homepage})`);
+    }
+    if (meta?.registryPageUrl) {
+      links.push(
+        `[${node.project.ecosystem === 'npm' ? 'npmjs.com' : 'nuget.org'}](${meta.registryPageUrl})`
+      );
+    }
+    if (links.length > 0) {
+      md.appendMarkdown(`${links.join(' · ')}\n`);
     }
     return md;
   }
