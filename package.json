@@ -371,8 +371,8 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "check-types": "tsc --noEmit -p ./",
-    "bundle": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
-    "bundle:watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --main-fields=module,main --minify",
+    "bundle:watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --main-fields=module,main --sourcemap --watch",
     "test": "npm run compile && node --test \"test/**/*.test.mjs\"",
     "vscode:prepublish": "npm run check-types && npm run bundle"
   },
