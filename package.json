@@ -28,7 +28,7 @@
     "pnpm",
     "nuget"
   ],
-  "main": "./out/extension.js",
+  "main": "./dist/extension.js",
   "icon": "media/icon.png",
   "galleryBanner": {
     "color": "#3A2F8F",
@@ -370,8 +370,11 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "check-types": "tsc --noEmit -p ./",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "bundle:watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch",
     "test": "npm run compile && node --test \"test/**/*.test.mjs\"",
-    "vscode:prepublish": "npm run compile"
+    "vscode:prepublish": "npm run check-types && npm run bundle"
   },
   "dependencies": {
     "jsonc-parser": "^3.3.1",
@@ -380,6 +383,7 @@
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.85.0",
+    "esbuild": "^0.28.1",
     "typescript": "^5.5.0"
   }
 }
