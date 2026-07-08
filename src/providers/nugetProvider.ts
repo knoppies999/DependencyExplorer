@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { DependencyNode, DependencyProvider, PackageId, Project } from '../types';
+import { DependencyNode, DependencyProvider, GraphAccess, PackageId, Project } from '../types';
 import { OsvService } from '../services/osvService';
 import { computeVulnClosure } from '../services/vulnClosure';
 
@@ -157,6 +157,25 @@ export class NugetProvider implements DependencyProvider {
       return undefined;
     }
     return { isDirect, version: lib?.version ?? '(not resolved)' };
+  }
+
+  getGraph(project: Project): GraphAccess | undefined {
+    const state = this.states.get(project.manifestPath);
+    if (!state) {
+      return undefined;
+    }
+    return {
+      roots: state.directNames.flatMap((n) =>
+        state.libs.has(n.toLowerCase()) ? [{ key: n.toLowerCase(), isDev: false }] : []
+      ),
+      entry: (key) => {
+        const lib = state.libs.get(key);
+        return lib ? { name: lib.name, version: lib.version } : undefined;
+      },
+      childKeys: (key) =>
+        (state.libs.get(key)?.deps ?? []).map((d) => d.toLowerCase()).filter((k) => state.libs.has(k)),
+      keys: () => [...state.libs.keys()],
+    };
   }
 
   applyVulnerabilities(project: Project): void {

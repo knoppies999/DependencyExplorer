@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { DependencyNode, DependencyProvider, PackageId, Project } from '../types';
+import { DependencyNode, DependencyProvider, GraphAccess, PackageId, Project } from '../types';
 import { OsvService } from '../services/osvService';
 import { computeVulnClosure } from '../services/vulnClosure';
 import { DepRef, ResolvedGraph } from './resolvedGraph';
@@ -200,6 +200,26 @@ export class NpmProvider implements DependencyProvider {
       return undefined;
     }
     return { isDirect, version: version ?? '(not installed)' };
+  }
+
+  getGraph(project: Project): GraphAccess | undefined {
+    const state = this.states.get(project.manifestPath);
+    if (!state) {
+      return undefined;
+    }
+    const graph = state.graph;
+    return {
+      roots: [
+        ...graph.directProd.flatMap((r) => (r.key ? [{ key: r.key, isDev: false }] : [])),
+        ...graph.directDev.flatMap((r) => (r.key ? [{ key: r.key, isDev: true }] : [])),
+      ],
+      entry: (key) => {
+        const entry = graph.entry(key);
+        return entry ? { name: entry.name, version: entry.version } : undefined;
+      },
+      childKeys: (key) => graph.children(key).flatMap((c) => (c.key ? [c.key] : [])),
+      keys: () => graph.keys(),
+    };
   }
 
   applyVulnerabilities(project: Project): void {

@@ -7,6 +7,8 @@ import { DependencyNode, Ecosystem, PackageLocation, Project, ProjectNode } from
 import { compareVersionsDesc, fetchVersions, isPrerelease } from './services/registryService';
 import { FixPlanItem, nearestSafeVersion } from './services/fixPlanner';
 import { matchesAnyPattern } from './services/packageMatch';
+import { bumpRisk, riskBadge } from './services/semverRisk';
+import { fetchPackageMetadata, getCachedMetadata } from './services/metadataService';
 import {
   csprojAddPackageReference,
   csprojReadAspireSdkVersion,
@@ -25,6 +27,8 @@ import { ASPIRE_SDK_NAME, ASPIRE_VERSION_REF, isAspirePackage, targetFrameworkOp
 import { DependencyTreeProvider } from './tree/dependencyTree';
 import { computeBumpPreview } from './services/previewService';
 import { confirmBump } from './ui/previewPanel';
+import { findDependencyPaths } from './services/whyService';
+import { showWhyPanel } from './ui/whyPanel';
 
 export function registerCommands(
   context: vscode.ExtensionContext,
@@ -99,6 +103,10 @@ export function registerCommands(
     vscode.commands.registerCommand(
       'dependencyExplorer.removeFromNeverUpdate',
       (node: DependencyNode) => removeFromFlagList(tree, 'neverUpdatePackages', node.name, 'never-update')
+    ),
+    // Dependency node context menu: show every chain that pulls this package into the project.
+    vscode.commands.registerCommand('dependencyExplorer.whyDependency', (node: DependencyNode) =>
+      showWhy(tree, node)
     ),
     // Project node context menu: re-install just that project's dependencies.
     vscode.commands.registerCommand('dependencyExplorer.reinstallProject', (node?: ProjectNode) =>
@@ -262,6 +270,29 @@ async function removeFromFlagList(
   } else {
     vscode.window.showInformationMessage(`${name} was not on the ${label} list.`);
   }
+}
+
+/**
+ * Reverse-dependency view: show every chain from a project's direct dependencies down to the
+ * package the user clicked, so they can see why a transitive dependency is present.
+ */
+async function showWhy(tree: DependencyTreeProvider, node: DependencyNode): Promise<void> {
+  await tree.ensureScanned();
+  const graph = tree.getGraph(node.project);
+  if (!graph) {
+    vscode.window.showInformationMessage(
+      `Dependency Explorer: no resolved graph for ${node.project.name} — run install/restore and refresh.`
+    );
+    return;
+  }
+  const result = findDependencyPaths(graph, node.name);
+  showWhyPanel({
+    project: node.project,
+    name: node.name,
+    version: node.version,
+    isDirect: node.isDirect,
+    result,
+  });
 }
 
 /**
@@ -514,11 +545,14 @@ async function updateAllToLatest(tree: DependencyTreeProvider, project?: Project
 
   const alwaysLatest = alwaysLatestPatterns();
   const isFlagged = (item: FixPlanItem) => matchesAnyPattern(item.name, alwaysLatest);
+  const isMajor = (item: FixPlanItem) =>
+    !!item.targetVersion && bumpRisk(item.currentVersion, item.targetVersion) === 'major';
   const chosen = await confirmSelection(
     plan,
     `Update ${plan.length} package${plan.length === 1 ? '' : 's'} to latest`,
-    // Directs and prefer-latest packages start checked; other transitive pins are opt-in.
-    (item) => item.isDirect || isFlagged(item),
+    // Prefer-latest packages always start checked. Otherwise directs start checked, except major
+    // (potentially breaking) bumps, which are opt-in — as are transitive pins.
+    (item) => isFlagged(item) || (item.isDirect && !isMajor(item)),
     (item) => (isFlagged(item) ? '★ prefer-latest' : undefined)
   );
   if (!chosen || chosen.length === 0) {
@@ -1333,9 +1367,10 @@ async function confirmSelection(
 ): Promise<FixPlanItem[] | undefined> {
   const picks = items.map((item) => {
     const extra = tag(item);
+    const badge = item.targetVersion ? riskBadge(bumpRisk(item.currentVersion, item.targetVersion)) : '';
     return {
       label: `${item.name}  ${item.currentVersion} → ${item.targetVersion}`,
-      description: `${item.project.name} · ${item.isDirect ? 'update' : 'pin'}${extra ? ` · ${extra}` : ''}`,
+      description: `${item.project.name} · ${item.isDirect ? 'update' : 'pin'}${badge ? ` · ${badge}` : ''}${extra ? ` · ${extra}` : ''}`,
       picked: isPicked(item),
       item,
     };
@@ -1384,6 +1419,7 @@ async function previewAndConfirm(
           tree.getTargetFramework(req.project)
         )
     );
+    const meta = await fetchPackageMetadata(req.ecosystem, req.name, dirOf(req.project));
     return await confirmBump({
       ecosystem: req.ecosystem,
       name: req.name,
@@ -1392,6 +1428,8 @@ async function previewAndConfirm(
       isDirect: req.isDirect,
       preview,
       projectCount: req.projectCount,
+      risk: bumpRisk(req.currentVersion, resolved),
+      deprecatedMessage: meta?.deprecated.get(resolved),
     });
   } catch (err) {
     // Preview is best-effort; if the registry can't be reached, let the user decide.
@@ -1507,6 +1545,11 @@ async function pickVersion(
     );
   }
 
+  // Best-effort deprecation flags from already-cached metadata (usually populated when the tree
+  // rendered this node). Never block the picker on a fresh lookup — just warm the cache for later.
+  const deprecated = getCachedMetadata(ecosystem, name)?.deprecated;
+  void fetchPackageMetadata(ecosystem, name, projectDir);
+
   const title = `Set version for ${name} (currently ${currentVersion})`;
   if (versions.length === 0) {
     const typed = await vscode.window.showInputBox({
@@ -1523,6 +1566,8 @@ async function pickVersion(
       v === latest ? 'latest' : undefined,
       v === currentVersion ? 'current' : undefined,
       isPrerelease(v) ? 'pre-release' : undefined,
+      deprecated?.has(v) ? '⛔ deprecated' : undefined,
+      v !== currentVersion ? riskBadge(bumpRisk(currentVersion, v)) || undefined : undefined,
     ]
       .filter(Boolean)
       .join(' · '),
