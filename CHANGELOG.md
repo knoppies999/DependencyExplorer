@@ -2,6 +2,14 @@
 
 All notable changes to the **Dependency Explorer** extension are documented here.
 
+## 1.6.2 — 2026-07-08
+
+### Changed
+
+- **The extension is now bundled with esbuild** — it ships as a single minified file instead of the
+  full source tree plus `node_modules`, so the package is smaller and loads faster in the editor. No
+  behavioural change.
+
 ## 1.6.1 — 2026-07-08
 
 ### Changed
