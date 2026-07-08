@@ -2,7 +2,7 @@
   "name": "dependency-explorer",
   "displayName": "Dependency Explorer",
   "description": "Full dependency tree (including transitive dependencies) for npm, pnpm and NuGet projects, with vulnerability flags and one-click update, transitive override, or bulk fix.",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "publisher": "RuanduPlessis",
   "license": "MIT",
   "repository": {
@@ -371,8 +371,8 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "check-types": "tsc --noEmit -p ./",
-    "bundle": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
-    "bundle:watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --main-fields=module,main --minify",
+    "bundle:watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --main-fields=module,main --sourcemap --watch",
     "test": "npm run compile && node --test \"test/**/*.test.mjs\"",
     "vscode:prepublish": "npm run check-types && npm run bundle"
   },
