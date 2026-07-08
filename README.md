@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/knoppies999/DependencyExplorer/actions/workflows/ci.yml"><img src="https://github.com/knoppies999/DependencyExplorer/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://marketplace.visualstudio.com/items?itemName=RuanduPlessis.dependency-explorer"><img src="https://img.shields.io/visual-studio-marketplace/v/RuanduPlessis.dependency-explorer?label=Marketplace&color=5B4FD1" alt="Marketplace version"></a>
   <a href="https://marketplace.visualstudio.com/items?itemName=RuanduPlessis.dependency-explorer"><img src="https://img.shields.io/visual-studio-marketplace/i/RuanduPlessis.dependency-explorer?color=5B4FD1" alt="Installs"></a>
   <a href="https://marketplace.visualstudio.com/items?itemName=RuanduPlessis.dependency-explorer"><img src="https://img.shields.io/visual-studio-marketplace/r/RuanduPlessis.dependency-explorer?color=5B4FD1" alt="Rating"></a>
@@ -217,6 +218,20 @@ npx @vscode/vsce package
 
 The `vscode:prepublish` step type-checks and produces the minified bundle automatically. Then install
 it via *Extensions: Install from VSIX…*.
+
+### Tests
+
+```bash
+npm test          # compiles to out/, then runs node --test over test/**/*.test.mjs
+```
+
+The suite is plain [`node:test`](https://nodejs.org/api/test.html) — no VS Code host needed. The
+core logic (manifest editors, version comparison, semver-risk classification, the lockfile graph
+parsers, vulnerability-closure and "why is this here?" reachability, the nearest-safe-version
+planner, feed/credential resolution) lives in deliberately `vscode`-free modules, and the tests load
+their compiled `out/**` output directly. `commands.ts` imports `vscode`, so the handful of tests that
+cover its internals assert against the compiled source instead. Every push and pull request runs the
+suite on Node 20 and 22 via [GitHub Actions](.github/workflows/ci.yml).
 
 ### Project layout
 
